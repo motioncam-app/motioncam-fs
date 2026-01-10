@@ -24,7 +24,7 @@ jobs:
             vcpkg_triplet: x64-osx
             artifact_suffix: macos-x86_64
             qt_version: 6.7.2
-            qt_install: brew
+            qt_install: aqt
           - os: macos-14
             build_type: Release
             build_dir: build-arm64
@@ -55,6 +55,16 @@ jobs:
           ${{ runner.os }}-${{ matrix.vcpkg_triplet }}-deps-
 
     # ---------- QT ----------
+    - name: Install Qt (macOS via aqt)
+      if: matrix.qt_install == 'aqt'
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: "${{ matrix.qt_version }}"
+        host: mac
+        target: desktop
+        arch: ${{ matrix.qt_arch }}
+        set-env: true
+
     - name: Install Qt (macOS arm64 via Homebrew)
       if: matrix.qt_install == 'brew'
       shell: bash
@@ -129,6 +139,19 @@ jobs:
         if [ -n "$app" ]; then
           echo "Running macdeployqt on $app"
           macdeployqt "$app" -verbose=2 || echo "macdeployqt failed"
+          FUSE_LIB=""
+          for candidate in "$(brew --prefix)/lib/libfuse.2.dylib" "/usr/local/lib/libfuse.2.dylib" "/opt/homebrew/lib/libfuse.2.dylib"; do
+            if [ -f "$candidate" ]; then
+              FUSE_LIB="$candidate"
+              break
+            fi
+          done
+          if [ -n "$FUSE_LIB" ]; then
+            mkdir -p "$app/Contents/Frameworks"
+            cp "$FUSE_LIB" "$app/Contents/Frameworks/"
+            install_name_tool -id "@rpath/libfuse.2.dylib" "$app/Contents/Frameworks/libfuse.2.dylib"
+            install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/MotionCamFuse" 2>/dev/null || true
+          fi
           zip -r ../artifacts/motioncam-${ref_safe}-${{ matrix.artifact_suffix }}.zip "$app"
         fi
 
