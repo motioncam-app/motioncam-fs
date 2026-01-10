@@ -33,6 +33,9 @@ QT_LIB_DIR="${QT_PREFIX}/lib"
 copy_framework() {
   local name="$1"
   local target="$APP_PATH/Contents/Frameworks/${name}.framework"
+  if [[ -L "$target" ]]; then
+    rm -rf "$target"
+  fi
   if [[ -d "$target" ]]; then
     return 0
   fi
@@ -48,17 +51,78 @@ copy_framework() {
   )
   for candidate in "${candidates[@]}"; do
     if [[ -d "$candidate" ]]; then
-      cp -R "$candidate" "$APP_PATH/Contents/Frameworks/"
+      cp -R -L "$candidate" "$APP_PATH/Contents/Frameworks/"
       return 0
     fi
   done
   return 1
 }
 
+copy_dylib() {
+  local rel="$1"
+  local name
+  name="$(basename "$rel")"
+  local target="$APP_PATH/Contents/Frameworks/$name"
+  if [[ -f "$target" ]]; then
+    return 0
+  fi
+  local candidates=(
+    "$QT_LIB_DIR/$rel"
+    "$QT_LIB_DIR/$name"
+    "/usr/local/lib/$name"
+    "/usr/local/opt/qt/lib/$name"
+    "/usr/local/opt/qt@6/lib/$name"
+    "/opt/homebrew/lib/$name"
+    "/opt/homebrew/opt/qt/lib/$name"
+    "/opt/homebrew/opt/qt@6/lib/$name"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [[ -f "$candidate" ]]; then
+      cp -L "$candidate" "$target"
+      install_name_tool -id "@rpath/$name" "$target"
+      return 0
+    fi
+  done
+  return 1
+}
+
+list_missing_rpath() {
+  find "$APP_PATH/Contents" -type f \( -perm -111 -o -name "*.dylib" -o -name "*.so" \) -print0 | \
+    while IFS= read -r -d '' f; do
+      otool -L "$f" | tail -n +2 | awk '{print $1}' | while read -r dep; do
+        case "$dep" in
+          @rpath/*)
+            rel="${dep#@rpath/}"
+            if ! find "$APP_PATH/Contents" -path "*/$rel" -print -quit | grep -q .; then
+              echo "$rel"
+            fi
+            ;;
+        esac
+      done
+    done | sort -u
+}
+
+copy_missing_rpath() {
+  local missing
+  missing="$(list_missing_rpath || true)"
+  if [[ -z "$missing" ]]; then
+    return 0
+  fi
+  while IFS= read -r rel; do
+    if [[ "$rel" == *.framework/* ]]; then
+      local fw="${rel%%.framework*}"
+      copy_framework "$fw" || true
+    elif [[ "$rel" == *.dylib ]]; then
+      copy_dylib "$rel" || true
+    fi
+  done <<< "$missing"
+}
+
 copy_framework "QtDBus"
 copy_framework "QtSvg"
 copy_framework "QtVirtualKeyboard"
 copy_framework "QtVirtualKeyboardQml"
+copy_missing_rpath
 
 BIN="$APP_PATH/Contents/MacOS/MotionCamFuse"
 if [[ -f "$BIN" ]]; then
@@ -95,6 +159,12 @@ if [[ -n "$BROTLI_COMMON" ]]; then
   mkdir -p "$APP_PATH/Contents/Frameworks"
   cp "$BROTLI_COMMON" "$APP_PATH/Contents/Frameworks/"
   install_name_tool -id "@rpath/libbrotlicommon.1.dylib" "$APP_PATH/Contents/Frameworks/libbrotlicommon.1.dylib"
+fi
+
+LEFTOVER_MISSING="$(list_missing_rpath || true)"
+if [[ -n "$LEFTOVER_MISSING" ]]; then
+  echo "Warning: missing @rpath entries remain:" >&2
+  echo "$LEFTOVER_MISSING" >&2
 fi
 
 codesign --force --deep --sign - "$APP_PATH"

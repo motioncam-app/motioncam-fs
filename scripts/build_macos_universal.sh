@@ -22,5 +22,10 @@ cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" \
 
 cmake --build "${BUILD_DIR}" --config Release
 
+APP_PATH="${BUILD_DIR}/MotionCamFuse.app"
+if [[ -d "$APP_PATH" ]]; then
+  "${ROOT_DIR}/scripts/package_macos_app.sh" "$APP_PATH"
+fi
+
 echo "Universal build output:"
 echo "  ${BUILD_DIR}/MotionCamFuse.app"
