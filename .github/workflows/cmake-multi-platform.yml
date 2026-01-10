@@ -13,9 +13,10 @@ jobs:
   build-macos:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15-intel
             build_type: Release
             build_dir: build-x86
             mac_arch: x86_64
