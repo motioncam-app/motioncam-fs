@@ -33,7 +33,7 @@ QT_LIB_DIR="${QT_PREFIX}/lib"
 copy_framework() {
   local name="$1"
   local target="$APP_PATH/Contents/Frameworks/${name}.framework"
-  if [[ -L "$target" ]]; then
+  if [[ -e "$target" ]]; then
     rm -rf "$target"
   fi
   if [[ -d "$target" ]]; then
@@ -51,7 +51,7 @@ copy_framework() {
   )
   for candidate in "${candidates[@]}"; do
     if [[ -d "$candidate" ]]; then
-      cp -R -L "$candidate" "$APP_PATH/Contents/Frameworks/"
+      rsync -a "$candidate" "$APP_PATH/Contents/Frameworks/"
       return 0
     fi
   done
