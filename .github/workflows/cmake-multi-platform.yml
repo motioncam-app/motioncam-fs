@@ -29,6 +29,7 @@ jobs:
             vcpkg_triplet: x64-osx
             artifact_suffix: macos-x86_64
             qt_version: 6.7.2
+            qt_install: aqt
           - os: macos-14
             build_type: Release
             build_dir: build-arm64
@@ -36,7 +37,8 @@ jobs:
             qt_arch: clang_arm64
             vcpkg_triplet: arm64-osx
             artifact_suffix: macos-arm64
-            qt_version: 6.8.0
+            qt_version: 6.7.2
+            qt_install: brew
 
     steps:
     # ---------- CHECKOUT ----------
@@ -69,7 +71,7 @@ jobs:
         set-env: true
 
     - name: Install Qt (macOS)
-      if: startsWith(matrix.os, 'macos-')
+      if: startsWith(matrix.os, 'macos-') && matrix.qt_install == 'aqt'
       uses: jurplel/install-qt-action@v3
       with:
         version: "${{ matrix.qt_version }}"
@@ -77,6 +79,14 @@ jobs:
         target: desktop
         arch: ${{ matrix.qt_arch }}
         set-env: true
+
+    - name: Install Qt (macOS arm64 via Homebrew)
+      if: startsWith(matrix.os, 'macos-') && matrix.qt_install == 'brew'
+      shell: bash
+      run: |
+        set -euxo pipefail
+        brew install qt@6
+        echo "$(brew --prefix qt@6)/bin" >> "$GITHUB_PATH"
 
     # ---------- VCPKG ----------
     - name: Install spdlog via vcpkg
@@ -176,7 +186,14 @@ jobs:
       shell: bash
       run: |
         BREW_PREFIX="$(brew --prefix)"
-        QT_PREFIX="${Qt6_ROOT_DIR:-${Qt6_DIR:-${GITHUB_WORKSPACE}/Qt/${{ matrix.qt_version }}/macos}}"
+        QT_PREFIX="${Qt6_ROOT_DIR:-${Qt6_DIR:-}}"
+        if [ -z "$QT_PREFIX" ] || [ ! -d "$QT_PREFIX" ]; then
+          if [ -d "${GITHUB_WORKSPACE}/Qt/${{ matrix.qt_version }}/macos" ]; then
+            QT_PREFIX="${GITHUB_WORKSPACE}/Qt/${{ matrix.qt_version }}/macos"
+          else
+            QT_PREFIX="$(brew --prefix qt@6)"
+          fi
+        fi
         cmake -S . -B "${{ matrix.build_dir }}" \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
           -DCMAKE_VERBOSE_MAKEFILE=ON \
