@@ -21,6 +21,7 @@ jobs:
             vcpkg_triplet: x64-windows
             artifact_suffix: windows
             qt_version: 6.7.2
+            qt_arch: win64_msvc2019_64
           - os: macos-13
             build_type: Release
             build_dir: build-x86
@@ -67,7 +68,7 @@ jobs:
         version: "${{ matrix.qt_version }}"
         host: windows
         target: desktop
-        arch: msvc2019_64
+        arch: ${{ matrix.qt_arch }}
         set-env: true
 
     - name: Install Qt (macOS)
@@ -178,7 +179,7 @@ jobs:
           -DCMAKE_VERBOSE_MAKEFILE=ON `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} `
-          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/Qt/${{ matrix.qt_version }}/msvc2019_64" `
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}" `
           -Dprojected-fs="C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64/ProjectedFSLib.lib"
 
     - name: Configure CMake (macOS)
@@ -262,7 +263,7 @@ jobs:
           exe=$(ls *.exe 2>/dev/null | head -n 1)
           if [ -n "$exe" ]; then
             echo "Running windeployqt on $exe"
-            "${{ github.workspace }}/Qt/${{ matrix.qt_version }}/msvc2019_64/bin/windeployqt.exe" "$exe" || echo "windeployqt failed"
+            "${{ github.workspace }}/Qt/${{ matrix.qt_version }}/${{ matrix.qt_arch }}/bin/windeployqt.exe" "$exe" || echo "windeployqt failed"
             7z a ../../artifacts/motioncam-${ref_safe}-${{ matrix.artifact_suffix }}.zip ./*
           fi
         elif [[ "${{ runner.os }}" == "macOS" ]]; then
