@@ -177,5 +177,7 @@ if [[ -n "$LEFTOVER_MISSING" ]]; then
   echo "$LEFTOVER_MISSING" >&2
 fi
 
-codesign --force --deep --sign - "$APP_PATH"
+if ! codesign --force --deep --sign - "$APP_PATH"; then
+  echo "Warning: codesign failed; bundle remains unsigned." >&2
+fi
 echo "Packaged: $APP_PATH"
