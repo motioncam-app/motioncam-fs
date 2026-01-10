@@ -11,9 +11,19 @@
 #include <iostream>
 #include <pwd.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 
 #include <BS_thread_pool.hpp>
+#if __has_include(<fuse_t/fuse_t.h>)
 #include <fuse_t/fuse_t.h>
+#elif __has_include(<fuse/fuse.h>)
+#include <fuse/fuse.h>
+#elif __has_include(<fuse3/fuse.h>)
+#include <fuse3/fuse.h>
+#else
+#error "FUSE headers not found. Install macFUSE or provide FUSE headers."
+#endif
 #include <QDir>
 
 // Logging
@@ -171,44 +181,72 @@ void Session::init(VirtualFileSystemImpl_MCRAW* fs) {
     ops.open = fuseOpen;
     ops.read = fuseRead;
 
-    struct fuse_args args = FUSE_ARGS_INIT(0, nullptr);
+    auto addFuseArgs = [](struct fuse_args& args, bool minimal) {
+        // argv[0] is required by macFUSE for argument parsing.
+        fuse_opt_add_arg(&args, "MotionCam Fuse");
+        // Read only
+        fuse_opt_add_arg(&args, "-r");
+        if (minimal) {
+            return;
+        }
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "nobrowse");
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "rwsize=262144");
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "nonamedattr");
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "nomtime");
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "noappledouble");
+        fuse_opt_add_arg(&args, "-o");
+        fuse_opt_add_arg(&args, "noapplexattr");
+    };
 
-    // Read only
-    fuse_opt_add_arg(&args, "-r");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "nobrowse");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "rwsize=262144");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "nonamedattr");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "nomtime");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "noappledouble");
-    fuse_opt_add_arg(&args, "-o");
-    fuse_opt_add_arg(&args, "noapplexattr");
+    auto createSession = [&](bool minimal, std::string& errorOut) -> bool {
+        struct fuse_args args = FUSE_ARGS_INIT(0, nullptr);
+        addFuseArgs(args, minimal);
 
-    auto* context = new FuseContext();
+        auto* context = new FuseContext();
+        context->fs = fs;
+        context->nextFileHandle = 0;
 
-    context->fs = fs;
-    context->nextFileHandle = 0;
+        struct fuse_chan* ch = fuse_mount(mDstPath.c_str(), &args);
+        if (ch == nullptr) {
+            const int err = errno;
+            errorOut = std::string("Failed to mount FUSE (") + std::strerror(err) + ")";
+            fuse_opt_free_args(&args);
+            delete context;
+            return false;
+        }
 
-    struct fuse_chan* ch = fuse_mount(mDstPath.c_str(), &args);
-    struct fuse* fuse = fuse_new(ch, &args, &ops, sizeof(ops), context);
+        struct fuse* fuse = fuse_new(ch, &args, &ops, sizeof(ops), context);
+        fuse_opt_free_args(&args);
 
-    // Clean up
-    fuse_opt_free_args(&args);
+        if (fuse == nullptr) {
+            const int err = errno;
+            errorOut = err == 0
+                ? "Failed to create FUSE session (errno=0). Check macFUSE approval or mount options."
+                : std::string("Failed to create FUSE session (") + std::strerror(err) + ")";
+            fuse_unmount(mDstPath.c_str(), ch);
+            delete context;
+            return false;
+        }
 
-    if (fuse == nullptr) {
-        delete context;
-        throw std::runtime_error("Failed to create mount point (path: " + mDstPath + ")");
+        mFuseCh = ch;
+        mFuse = fuse;
+        mThread = std::make_unique<std::thread>(&Session::fuseMain, this, ch, fuse);
+        return true;
+    };
+
+    std::string errorMessage;
+    if (!createSession(false, errorMessage)) {
+        spdlog::warn("FUSE session creation failed with full options: {}", errorMessage);
+        if (!createSession(true, errorMessage)) {
+            throw std::runtime_error(
+                "Failed to create FUSE session at " + mDstPath + " (error: " + errorMessage + ")");
+        }
     }
-
-    mFuseCh = ch;
-    mFuse = fuse;
-
-    // Start fuse thread
-    mThread = std::make_unique<std::thread>(&Session::fuseMain, this, ch, fuse);
 
 }
 
@@ -425,6 +463,16 @@ MountId FuseFileSystemImpl_MacOs::mount(
             throw std::runtime_error("Failed to create " + dstPath);
         }
     }
+    else {
+        QFileInfo dstInfo(QString::fromStdString(dstPath));
+        if (dstInfo.exists() && !dstInfo.isDir()) {
+            throw std::runtime_error("Mount path is not a directory: " + dstPath);
+        }
+        const QStringList entries = dst.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+        if (!entries.isEmpty()) {
+            throw std::runtime_error("Mount path is not empty. Choose an empty folder: " + dstPath);
+        }
+    }
 
     if(boost::iequals(extension, ".mcraw")) {
         auto mountId = mNextMountId++;
@@ -485,7 +533,11 @@ MountId FuseFileSystemImpl_MacOs::mount(
 void FuseFileSystemImpl_MacOs::unmount(MountId mountId) {
     auto it = mMountedFiles.find(mountId);
     if(it != mMountedFiles.end()) {
+        auto session = std::move(it->second);
         mMountedFiles.erase(it);
+        std::thread([session = std::move(session)]() mutable {
+            session.reset();
+        }).detach();
     }
 }
 

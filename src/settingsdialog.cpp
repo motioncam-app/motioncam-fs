@@ -21,17 +21,37 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     setMinimumWidth(600);
     setMinimumHeight(200);
 
+#ifdef __APPLE__
+    mHelpFontSizePt = 11;
+#else
+    mHelpFontSizePt = 9;
+#endif
+
+    auto helpSpan = [this](const QString& text) {
+        return QString("<span style='color: #888888; font-size: %1pt;'>%2</span>")
+            .arg(mHelpFontSizePt)
+            .arg(text);
+    };
+
     // Main layout
     auto* mainLayout = new QVBoxLayout(this);
 
     // Cache folder group
+#ifdef __APPLE__
+    auto* cacheGroup = new QGroupBox("Mount Folder", this);
+#else
     auto* cacheGroup = new QGroupBox("DNG Output Folder", this);
+#endif
     auto* cacheLayout = new QVBoxLayout(cacheGroup);
 
     auto* cachePathLayout = new QHBoxLayout();
     auto* cacheLabel = new QLabel("Folder Path:", this);
     mCacheFolderEdit = new QLineEdit(this);
+#ifdef __APPLE__
+    mCacheFolderEdit->setPlaceholderText("Leave empty to use ~/Mounts/MotionCamFuse...");
+#else
     mCacheFolderEdit->setPlaceholderText("Leave empty for same folder as source file...");
+#endif
 
     mCacheBrowseButton = new QPushButton("Browse...", this);
     mCacheBrowseButton->setMaximumWidth(100);
@@ -41,11 +61,17 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     cachePathLayout->addWidget(mCacheBrowseButton);
     cacheLayout->addLayout(cachePathLayout);
 
+#ifdef __APPLE__
     auto* cacheHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Sets the location where DNG file sequences will appear after MCRAWs are loaded. "
-        "Source files must be on NTFS unless you set an NTFS DNG output folder."
-        "</span>", this);
+        helpSpan("Sets the folder where mounted DNG sequences appear. "
+                 "Leave empty to use the default mount root."),
+        this);
+#else
+    auto* cacheHelpLabel = new QLabel(
+        helpSpan("Sets the location where DNG file sequences will appear after MCRAWs are loaded. "
+                 "Source files must be on NTFS unless you set an NTFS DNG output folder."),
+        this);
+#endif
     cacheHelpLabel->setWordWrap(true);
     cacheLayout->addWidget(cacheHelpLabel);
 
@@ -53,6 +79,17 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     mCacheFolderWarningLabel->setWordWrap(true);
     mCacheFolderWarningLabel->setVisible(false);
     cacheLayout->addWidget(mCacheFolderWarningLabel);
+
+#ifdef __APPLE__
+    mDeleteOnUnmountCheckBox = new QCheckBox("Remove mount folder when unmounted", this);
+    cacheLayout->addWidget(mDeleteOnUnmountCheckBox);
+
+    auto* deleteOnUnmountHelpLabel = new QLabel(
+        helpSpan("Removes the empty mount folder created for each file."),
+        this);
+    deleteOnUnmountHelpLabel->setWordWrap(true);
+    cacheLayout->addWidget(deleteOnUnmountHelpLabel);
+#endif
 
     mainLayout->addWidget(cacheGroup);
 
@@ -103,33 +140,45 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     intervalLayout->addWidget(mCacheCleanupCustomEdit);
     cacheManagementLayout->addLayout(intervalLayout);
 
+#ifndef __APPLE__
     mDeleteOnUnmountCheckBox = new QCheckBox("Delete local DNG output when unmounted", this);
     cacheManagementLayout->addWidget(mDeleteOnUnmountCheckBox);
 
     auto* deleteOnUnmountHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Also removes the materialized DNG folder when you unmount/clear files."
-        "</span>", this);
+        helpSpan("Also removes the materialized DNG folder when you unmount/clear files."),
+        this);
     deleteOnUnmountHelpLabel->setWordWrap(true);
     cacheManagementLayout->addWidget(deleteOnUnmountHelpLabel);
+#endif
 
     auto* cacheManagementHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Disk quota limits total materialized size by evicting oldest files first."
-        "</span>", this);
+        helpSpan("Disk quota limits total materialized size by evicting oldest files first."),
+        this);
     cacheManagementHelpLabel->setWordWrap(true);
     cacheManagementLayout->addWidget(cacheManagementHelpLabel);
 
     mainLayout->addWidget(cacheManagementGroup);
+
+#ifdef __APPLE__
+    cacheManagementGroup->setVisible(false);
+#endif
 
     // Player settings group
     auto* playerGroup = new QGroupBox("Video Player", this);
     auto* playerLayout = new QVBoxLayout(playerGroup);
 
     auto* pathLayout = new QHBoxLayout();
+#ifdef __APPLE__
+    auto* pathLabel = new QLabel("Player App:", this);
+#else
     auto* pathLabel = new QLabel("Player Executable:", this);
+#endif
     mPlayerPathEdit = new QLineEdit(this);
+#ifdef __APPLE__
+    mPlayerPathEdit->setPlaceholderText("Path to MCRAW_Player.app...");
+#else
     mPlayerPathEdit->setPlaceholderText("Path to MotionCamPlayer.exe...");
+#endif
 
     mPlayerBrowseButton = new QPushButton("Browse...", this);
     mPlayerBrowseButton->setMaximumWidth(100);
@@ -139,10 +188,15 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     pathLayout->addWidget(mPlayerBrowseButton);
     playerLayout->addLayout(pathLayout);
 
+#ifdef __APPLE__
     auto* playerHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Path to MotionCamPlayer.exe for the Play button."
-        "</span>", this);
+        helpSpan("Path to MCRAW_Player.app for the Play button."),
+        this);
+#else
+    auto* playerHelpLabel = new QLabel(
+        helpSpan("Path to MotionCamPlayer.exe for the Play button."),
+        this);
+#endif
     playerHelpLabel->setWordWrap(true);
     playerLayout->addWidget(playerHelpLabel);
 
@@ -156,18 +210,26 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     auto* modelLabel = new QLabel("Camera Model:", this);
     mCameraModelComboBox = new QComboBox(this);
     mCameraModelComboBox->setEditable(true);
+#ifdef __APPLE__
+    mCameraModelComboBox->addItem("Default", QString());
+#endif
     mCameraModelComboBox->addItem("Panasonic");
     mCameraModelComboBox->addItem("Blackmagic");
     mCameraModelComboBox->addItem("Fujifilm");
+#ifdef __APPLE__
+    if (auto* editor = mCameraModelComboBox->lineEdit()) {
+        editor->setPlaceholderText("Default");
+    }
+    mCameraModelComboBox->setCurrentIndex(0);
+#endif
 
     modelLayout->addWidget(modelLabel);
     modelLayout->addWidget(mCameraModelComboBox, 1);
     cameraLayout->addLayout(modelLayout);
 
     auto* modelHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Override the camera model name in DNG metadata."
-        "</span>", this);
+        helpSpan("Override the camera model name in DNG metadata."),
+        this);
     modelHelpLabel->setWordWrap(true);
     cameraLayout->addWidget(modelHelpLabel);
 
@@ -190,9 +252,8 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     matrixLayout->addLayout(matrixProfileLayout);
 
     auto* matrixHelpLabel = new QLabel(
-        "<span style='color: #888888; font-size: 9pt;'>"
-        "Overrides ColorMatrix1/2 and ForwardMatrix1/2 from a preset profile in matrix.json."
-        "</span>", this);
+        helpSpan("Overrides ColorMatrix1/2 and ForwardMatrix1/2 from a preset profile in matrix.json."),
+        this);
     matrixHelpLabel->setWordWrap(true);
     matrixLayout->addWidget(matrixHelpLabel);
 
@@ -200,6 +261,18 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
     // Add spacer
     mainLayout->addStretch();
+
+    auto* resetLayout = new QHBoxLayout();
+#ifdef __APPLE__
+    mResetPathsButton = new QPushButton("Reset", this);
+    mResetPathsButton->setToolTip("Clear the mount folder, player path, and camera model override.");
+#else
+    mResetPathsButton = new QPushButton("Reset Paths", this);
+    mResetPathsButton->setToolTip("Clear the saved mount folder and player path.");
+#endif
+    resetLayout->addWidget(mResetPathsButton);
+    resetLayout->addStretch();
+    mainLayout->addLayout(resetLayout);
 
     // Button box
     mButtonBox = new QDialogButtonBox(
@@ -215,6 +288,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     connect(mCachePolicyComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SettingsDialog::onCachePolicyChanged);
     connect(mCacheQuotaComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SettingsDialog::onCacheQuotaChanged);
     connect(mCacheCleanupIntervalComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &SettingsDialog::onCleanupIntervalChanged);
+    connect(mResetPathsButton, &QPushButton::clicked, this, &SettingsDialog::onResetPaths);
     connect(mMatrixOverrideCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         mMatrixProfileComboBox->setEnabled(checked);
     });
@@ -252,11 +326,22 @@ QString SettingsDialog::getCacheFolder() const
 
 void SettingsDialog::setCameraModel(const QString& model)
 {
+#ifdef __APPLE__
+    if (model.isEmpty()) {
+        mCameraModelComboBox->setCurrentIndex(0);
+        return;
+    }
+#endif
     mCameraModelComboBox->setCurrentText(model);
 }
 
 QString SettingsDialog::getCameraModel() const
 {
+#ifdef __APPLE__
+    if (mCameraModelComboBox->currentIndex() == 0) {
+        return QString();
+    }
+#endif
     return mCameraModelComboBox->currentText();
 }
 
@@ -336,7 +421,9 @@ void SettingsDialog::setCacheFolderWarning(const QString& message)
         }
     } else {
         mCacheFolderWarningLabel->setText(
-            QString("<span style='color: #cc8b2c; font-size: 9pt;'>%1</span>").arg(message));
+            QString("<span style='color: #cc8b2c; font-size: %1pt;'>%2</span>")
+                .arg(mHelpFontSizePt)
+                .arg(message));
         mCacheFolderWarningLabel->setVisible(true);
         if (mButtonBox) {
             mButtonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
@@ -394,11 +481,13 @@ void SettingsDialog::onCacheFolderTextChanged(const QString& text)
         setCacheFolderWarning("Selected folder is not on a ready volume.");
         return;
     }
+#ifdef _WIN32
     if (fsType.compare("NTFS", Qt::CaseInsensitive) != 0) {
         setCacheFolderWarning(QString("Selected folder is on %1. DNG output must be on NTFS.")
                                   .arg(fsType.isEmpty() ? "unknown" : fsType));
         return;
     }
+#endif
 
     setCacheFolderWarning("");
 }
@@ -460,11 +549,13 @@ void SettingsDialog::onBrowseCacheFolder()
             setCacheFolderWarning("Selected folder is not on a ready volume.");
             return;
         }
+#ifdef _WIN32
         if (fsType.compare("NTFS", Qt::CaseInsensitive) != 0) {
             setCacheFolderWarning(QString("Selected folder is on %1. DNG output must be on NTFS.")
                                       .arg(fsType.isEmpty() ? "unknown" : fsType));
             return;
         }
+#endif
 
         mCacheFolderEdit->setText(folderPath);
         setCacheFolderWarning("");
@@ -473,13 +564,43 @@ void SettingsDialog::onBrowseCacheFolder()
 
 void SettingsDialog::onBrowsePlayerPath()
 {
+#ifdef __APPLE__
+    const QString startDir = mPlayerPathEdit->text().isEmpty()
+        ? QStringLiteral("/Applications")
+        : mPlayerPathEdit->text();
+    QString playerPath = QFileDialog::getOpenFileName(
+        this,
+        tr("Select MCRAW_Player.app"),
+        startDir,
+        tr("Applications (*.app)"));
+
+    const QString marker = ".app/Contents/";
+    const int markerIndex = playerPath.indexOf(marker, 0, Qt::CaseInsensitive);
+    if (markerIndex >= 0) {
+        playerPath = playerPath.left(markerIndex + 4);
+    }
+#else
     QString playerPath = QFileDialog::getOpenFileName(
         this,
         tr("Select MotionCamPlayer.exe"),
         mPlayerPathEdit->text(),
         tr("MotionCamPlayer (MotionCamPlayer.exe);;Executable Files (*.exe)"));
+#endif
 
     if (!playerPath.isEmpty()) {
         mPlayerPathEdit->setText(playerPath);
     }
+}
+
+void SettingsDialog::onResetPaths() {
+#ifdef __APPLE__
+    mCacheFolderEdit->clear();
+    mPlayerPathEdit->clear();
+    mCameraModelComboBox->setCurrentIndex(0);
+    setCacheFolderWarning("");
+#else
+    mCacheFolderEdit->clear();
+    mPlayerPathEdit->clear();
+    setCacheFolderWarning("");
+#endif
 }

@@ -10,6 +10,10 @@
 
 #include <boost/iostreams/stream.hpp>
 #include <boost/iostreams/device/back_inserter.hpp>
+#ifdef __APPLE__
+#include "CrashDebug.h"
+#include <sstream>
+#endif
 
 #define TINY_DNG_WRITER_IMPLEMENTATION 1
 
@@ -1238,6 +1242,16 @@ std::shared_ptr<std::vector<char>> generateDng(
         std::chrono::high_resolution_clock::now() - preprocessStartTime).count();
     spdlog::warn("[PERF] DNG preprocessData: {}ms ({}x{})", preprocessMs, width, height);
 
+#ifdef __APPLE__
+    motioncam::debug::setDngContext(
+        frameNumber,
+        width,
+        height,
+        data.size(),
+        processedData.size());
+    motioncam::debug::setStage("generateDng: preprocessed");
+#endif
+
     auto dngBuildStart = std::chrono::high_resolution_clock::now();
 
     spdlog::debug("New black level {},{},{},{} and white level {}",
@@ -1286,6 +1300,7 @@ std::shared_ptr<std::vector<char>> generateDng(
     else {
         encodeBits = 16;
     }
+
 
     // Create first frame
     tinydngwriter::DNGImage dng;
@@ -1458,6 +1473,9 @@ std::shared_ptr<std::vector<char>> generateDng(
 
     // Add lens shading map as opcode list 2 if not applied to image data
     if (!opcodeList2.IsEmpty()) {
+#ifdef __APPLE__
+        motioncam::debug::setStage("generateDng: before opcode list");
+#endif
         dng.SetOpcodeList2(opcodeList2);
     }
 
@@ -1522,12 +1540,22 @@ std::shared_ptr<std::vector<char>> generateDng(
     // Save to memory
     auto output = std::make_shared<std::vector<char>>();
 
+#ifdef __APPLE__
+    motioncam::debug::setStage("generateDng: before write");
+    std::ostringstream stream(std::ios::out | std::ios::binary);
+    writer.WriteToFile(stream, &err);
+    motioncam::debug::setStage("generateDng: after write");
+    const std::string payload = stream.str();
+    output->reserve(payload.size());
+    output->assign(payload.begin(), payload.end());
+#else
     // Reserve enough to fit the data
     output->reserve(width*height*sizeof(uint16_t) + 512*1024);
 
     utils::vector_ostream stream(*output);
 
     writer.WriteToFile(stream, &err);
+#endif
 
     auto dngBuildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::high_resolution_clock::now() - dngBuildStart).count();

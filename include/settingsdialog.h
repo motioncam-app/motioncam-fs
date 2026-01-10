@@ -56,13 +56,16 @@ private slots:
     void onCachePolicyChanged(int index);
     void onCacheQuotaChanged(int index);
     void onCleanupIntervalChanged(int index);
+    void onResetPaths();
 
 private:
+    int mHelpFontSizePt;
     QLineEdit* mPlayerPathEdit;
     QPushButton* mPlayerBrowseButton;
 
     QLineEdit* mCacheFolderEdit;
     QPushButton* mCacheBrowseButton;
+    QPushButton* mResetPathsButton;
 
     QComboBox* mCameraModelComboBox;
     QLabel* mCacheFolderWarningLabel;

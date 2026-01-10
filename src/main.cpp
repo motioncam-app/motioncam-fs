@@ -19,11 +19,82 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QVBoxLayout>
+#include <QGuiApplication>
 #include <spdlog/spdlog.h>
+
+#ifdef __APPLE__
+#include "CrashDebug.h"
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cstring>
+#include <cstdio>
+#include <exception>
+#endif
 
 #ifdef _WIN32
 #include <Windows.h>
 #include <shellapi.h>
+#endif
+
+#ifdef __APPLE__
+namespace {
+int gCrashFd = -1;
+
+void writeCrashLine(const char* msg) {
+    if (gCrashFd >= 0) {
+        ::write(gCrashFd, msg, std::strlen(msg));
+    }
+}
+
+void crashHandler(int sig) {
+    writeCrashLine("\n==== MotionCamFuse crash ====\n");
+    char buf[64];
+    const int len = std::snprintf(buf, sizeof(buf), "Signal %d\n", sig);
+    if (len > 0 && gCrashFd >= 0) {
+        ::write(gCrashFd, buf, static_cast<size_t>(len));
+    }
+    motioncam::debug::dumpCrashContext(gCrashFd >= 0 ? gCrashFd : STDERR_FILENO);
+    void* stack[64];
+    const int frames = ::backtrace(stack, static_cast<int>(sizeof(stack) / sizeof(stack[0])));
+    const int fd = gCrashFd >= 0 ? gCrashFd : STDERR_FILENO;
+    ::backtrace_symbols_fd(stack, frames, fd);
+    if (gCrashFd >= 0) {
+        ::fsync(gCrashFd);
+    }
+    _Exit(128 + sig);
+}
+
+void installCrashHandler() {
+    const QString logDir = QDir(QDir::homePath()).filePath("Library/Logs/MotionCam Tools");
+    QDir().mkpath(logDir);
+    const QString logPath = QDir(logDir).filePath("crash.txt");
+    gCrashFd = ::open(logPath.toUtf8().constData(), O_CREAT | O_WRONLY | O_APPEND, 0644);
+
+    struct sigaction sa {};
+    sa.sa_handler = crashHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_RESETHAND;
+    sigaction(SIGSEGV, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGBUS, &sa, nullptr);
+    sigaction(SIGILL, &sa, nullptr);
+    sigaction(SIGFPE, &sa, nullptr);
+
+    std::set_terminate([]() {
+        writeCrashLine("\n==== MotionCamFuse terminate ====\n");
+        void* stack[64];
+        const int frames = ::backtrace(stack, static_cast<int>(sizeof(stack) / sizeof(stack[0])));
+        const int fd = gCrashFd >= 0 ? gCrashFd : STDERR_FILENO;
+        ::backtrace_symbols_fd(stack, frames, fd);
+        if (gCrashFd >= 0) {
+            ::fsync(gCrashFd);
+        }
+        _Exit(1);
+    });
+}
+} // namespace
 #endif
 
 void messageHandler(QtMsgType type, const QMessageLogContext &context, const QString &msg)
@@ -228,11 +299,27 @@ int main(int argc, char *argv[])
 {
     SingleApplication app(argc, argv);
 
+#ifdef __APPLE__
+    installCrashHandler();
+#endif
+
     // Set application properties
     app.setApplicationName("MotionCam Fuse");
     app.setApplicationVersion("1.0");
     app.setOrganizationName("MotionCam");
+#ifdef __APPLE__
+    app.setWindowIcon(QIcon(":/assets/app_icon_mac.png"));
+#else
     app.setWindowIcon(QIcon(":/assets/app_icon.png"));
+#endif
+
+#ifdef __APPLE__
+    QFont appFont = app.font();
+    if (appFont.pointSizeF() > 0) {
+        appFont.setPointSizeF(appFont.pointSizeF() + 2.0);
+        app.setFont(appFont);
+    }
+#endif
 
     // Load theme
     QFile themeFile(":qdarkstyle/dark/darkstyle.qss");
@@ -293,6 +380,24 @@ int main(int argc, char *argv[])
 
     // Show window first so any dialogs appear in front of the app
     window.show();
+
+#ifdef __APPLE__
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &window,
+        [&window](Qt::ApplicationState state) {
+            if (state != Qt::ApplicationActive) {
+                return;
+            }
+            if (window.isVisible() && !window.isMinimized()) {
+                return;
+            }
+            window.show();
+            if (window.isMinimized()) {
+                window.showNormal();
+            }
+            window.raise();
+            window.activateWindow();
+        });
+#endif
 
     // Ask to resume previous session after showing the window
     const QString appData = qEnvironmentVariable("APPDATA");

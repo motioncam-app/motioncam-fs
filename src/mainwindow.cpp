@@ -16,6 +16,7 @@
 #include <QDir>
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <QTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -37,9 +38,12 @@
 #include <QStorageInfo>
 #include <QSignalBlocker>
 #include <QStandardItemModel>
+#include <spdlog/spdlog.h>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QDrag>
+#include <QMetaObject>
+#include <QRunnable>
 #include <thread>
 #include <atomic>
 #include <motioncam/Decoder.hpp>
@@ -48,6 +52,7 @@
 #include "win/FuseFileSystemImpl_Win.h"
 #elif __APPLE__
 #include "macos/FuseFileSystemImpl_MacOS.h"
+#include <sys/mount.h>
 #endif
 
 namespace {
@@ -197,6 +202,51 @@ namespace {
 #endif
         return true;
     }
+
+#ifdef __APPLE__
+    struct ThumbnailTask : public QRunnable {
+        explicit ThumbnailTask(std::function<void()> fn) : fn_(std::move(fn)) {
+            setAutoDelete(true);
+        }
+        void run() override {
+            fn_();
+        }
+    private:
+        std::function<void()> fn_;
+    };
+
+    bool isMotionCamFuseSource(const QString& source) {
+        return source.startsWith("MotionCamFuse@") || source.startsWith("MotionCam Fuse@");
+    }
+
+    QStringList listMotionCamFuseMounts() {
+        struct statfs* mounts = nullptr;
+        const int count = getmntinfo(&mounts, MNT_NOWAIT);
+        if (count <= 0 || mounts == nullptr) {
+            return {};
+        }
+        QStringList mountPoints;
+        for (int i = 0; i < count; ++i) {
+            const QString source = QString::fromLocal8Bit(mounts[i].f_mntfromname);
+            if (!isMotionCamFuseSource(source)) {
+                continue;
+            }
+            const QString mountPoint = QString::fromLocal8Bit(mounts[i].f_mntonname);
+            if (!mountPoint.isEmpty()) {
+                mountPoints.push_back(mountPoint);
+            }
+        }
+        return mountPoints;
+    }
+
+    void unmountMacFusePath(const QString& mountPoint) {
+        const QByteArray mountBytes = mountPoint.toUtf8();
+        int res = ::unmount(mountBytes.constData(), 0);
+        if (res != 0) {
+            ::unmount(mountBytes.constData(), MNT_FORCE);
+        }
+    }
+#endif
 } 
 
 MainWindow::MainWindow(QWidget *parent)
@@ -223,6 +273,17 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     mDragAndDropLabel = ui->dragAndDropLabel;
+#ifdef __APPLE__
+    const auto labelList = findChildren<QLabel*>();
+    for (auto* label : labelList) {
+        QString text = label->text();
+        if (text.contains("font-size:9pt") || text.contains("font-size: 9pt")) {
+            text.replace("font-size:9pt", "font-size:11pt");
+            text.replace("font-size: 9pt", "font-size: 11pt");
+            label->setText(text);
+        }
+    }
+#endif
     mApplySelectedButtonBaseStyle = ui->applySelectedButton->styleSheet();
     mApplyAllButtonBaseStyle = ui->applyAllButton->styleSheet();
     ui->applySelectedButton->setCursor(Qt::PointingHandCursor);
@@ -257,6 +318,8 @@ MainWindow::MainWindow(QWidget *parent)
     mFuseFilesystem = std::make_unique<motioncam::FuseFileSystemImpl_Win>();
 #elif __APPLE__
     mFuseFilesystem = std::make_unique<motioncam::FuseFileSystemImpl_MacOs>();
+    mThumbnailPool.setMaxThreadCount(2);
+    QTimer::singleShot(0, this, &MainWindow::cleanupStaleMacFuseMounts);
 #endif
 
     // Enable drag and drop on the scroll area
@@ -316,10 +379,72 @@ MainWindow::MainWindow(QWidget *parent)
     connect(ui->actionSaveSession, &QAction::triggered, this, &MainWindow::onSaveSession);
     connect(ui->actionSaveSessionAs, &QAction::triggered, this, &MainWindow::onSaveSessionAs);
     connect(ui->actionOpenSettings, &QAction::triggered, this, &MainWindow::onOpenSettings);
+
+#ifdef __APPLE__
+    auto* forceUnmountAction = new QAction("Force Unmount All", this);
+    ui->menuFile->addSeparator();
+    ui->menuFile->addAction(forceUnmountAction);
+    connect(forceUnmountAction, &QAction::triggered, this, &MainWindow::forceUnmountAllMacFuseMounts);
+#endif
     initSessionMenus();
 
     applyCacheManagementSettings();
 }
+
+#ifdef __APPLE__
+void MainWindow::cleanupStaleMacFuseMounts() {
+    QSet<QString> activePaths;
+    for (const auto& mounted : mMountedFiles) {
+        QFileInfo info(mounted.mountPath);
+        const QString canonical = info.canonicalFilePath().isEmpty()
+            ? info.absoluteFilePath()
+            : info.canonicalFilePath();
+        if (!canonical.isEmpty()) {
+            activePaths.insert(canonical);
+        }
+        activePaths.insert(mounted.mountPath);
+    }
+
+    const QStringList mountPoints = listMotionCamFuseMounts();
+    for (const auto& mountPoint : mountPoints) {
+        if (mountPoint.isEmpty()) {
+            continue;
+        }
+
+        QFileInfo mountInfo(mountPoint);
+        const QString canonicalMount = mountInfo.canonicalFilePath().isEmpty()
+            ? mountInfo.absoluteFilePath()
+            : mountInfo.canonicalFilePath();
+
+        if (activePaths.contains(canonicalMount) || activePaths.contains(mountPoint)) {
+            continue;
+        }
+
+        unmountMacFusePath(mountPoint);
+        QDir().rmdir(mountPoint);
+    }
+}
+
+void MainWindow::forceUnmountAllMacFuseMounts() {
+    if (QMessageBox::question(this,
+                              "Force Unmount All",
+                              "Force unmount all MotionCamFuse volumes and clear the session?",
+                              QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+        return;
+    }
+
+    QStringList mountPoints = listMotionCamFuseMounts();
+    std::sort(mountPoints.begin(), mountPoints.end(),
+              [](const QString& a, const QString& b) { return a.size() > b.size(); });
+    for (const auto& mountPoint : mountPoints) {
+        unmountMacFusePath(mountPoint);
+        QDir().rmdir(mountPoint);
+    }
+
+    clearCurrentSession(false);
+    updateUi();
+}
+#endif
 
 MainWindow::~MainWindow() {
     saveSettings();
@@ -408,13 +533,24 @@ void MainWindow::restoreSettings() {
     mExposureCompensation = (!settings.contains("exposureCompensation") ? "0ev" : settings.value("exposureCompensation").toString().toStdString());
     mQuadBayerOption = "";
     mCropTarget = settings.value("cropTarget").toString().toStdString();
+#ifdef __APPLE__
+    mCameraModel = (!settings.contains("camModelOverride") ? "" : settings.value("camModelOverride").toString().toStdString());
+#else
     mCameraModel = (!settings.contains("camModelOverride") ? "Panasonic" : settings.value("camModelOverride").toString().toStdString());
+#endif
     mLevels = (!settings.contains("levels") ? "Dynamic" : settings.value("levels").toString().toStdString());
     mLogTransform = "";
 
+#ifdef __APPLE__
+    QString defaultPlayerPath;
+    if (QFile::exists("/Applications/MotionCam Player.app")) {
+        defaultPlayerPath = "/Applications/MotionCam Player.app";
+    }
+#else
     // Default player path
     QString appDir = QCoreApplication::applicationDirPath();
     QString defaultPlayerPath = QDir(appDir).absoluteFilePath("../Player/MotionCamPlayer.exe");
+#endif
     mPlayerPath = settings.value("playerPath", defaultPlayerPath).toString();
 
     const QString cachePolicyMode = settings.value("cachePolicyMode").toString();
@@ -791,7 +927,15 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 }
 
 QString MainWindow::mountDestinationPath(const QFileInfo& fileInfo) const {
+#ifdef __APPLE__
+    QString mountRoot = mCacheRootFolder;
+    if (mountRoot.isEmpty()) {
+        mountRoot = QDir(QDir::homePath()).filePath("Mounts/MotionCamFuse");
+    }
+    return QDir(mountRoot).filePath(fileInfo.baseName());
+#else
     return (mCacheRootFolder.isEmpty() ? fileInfo.path() : mCacheRootFolder) + "/" + fileInfo.baseName();
+#endif
 }
 
 void MainWindow::deleteMountOutputIfRequested(const QString& mountPath) {
@@ -811,6 +955,34 @@ void MainWindow::deleteMountOutputIfRequested(const QString& mountPath) {
         ? pathInfo.absoluteFilePath()
         : pathInfo.canonicalFilePath();
 
+#ifdef __APPLE__
+    QString mountRoot = mCacheRootFolder;
+    if (mountRoot.isEmpty()) {
+        mountRoot = QDir(QDir::homePath()).filePath("Mounts/MotionCamFuse");
+    }
+    const QString rootCanonical = QDir(mountRoot).canonicalPath().isEmpty()
+        ? QDir(mountRoot).absolutePath()
+        : QDir(mountRoot).canonicalPath();
+
+    if (rootCanonical.isEmpty() || canonical == rootCanonical ||
+        !canonical.startsWith(rootCanonical + QDir::separator())) {
+        return;
+    }
+
+    QDir dir(canonical);
+    const QStringList entries = dir.entryList(QDir::NoDotAndDotDot | QDir::AllEntries);
+    if (!entries.isEmpty()) {
+        spdlog::warn("Skipping delete of non-empty mount folder {}", canonical.toStdString());
+        return;
+    }
+
+    if (!dir.rmdir(canonical)) {
+        spdlog::warn("Failed to remove mount folder {}", canonical.toStdString());
+    }
+    return;
+#endif
+
+#ifndef __APPLE__
     const QString cacheRootCanonical = mCacheRootFolder.isEmpty() ? QString() : QDir(mCacheRootFolder).canonicalPath();
     if (!cacheRootCanonical.isEmpty() && canonical == cacheRootCanonical) {
         return;
@@ -823,11 +995,16 @@ void MainWindow::deleteMountOutputIfRequested(const QString& mountPath) {
 
     qDebug() << "[REMOVE] Deleting mount output at" << canonical;
     dir.removeRecursively();
+#endif
 }
 
 bool MainWindow::mountFileBackend(const QString& filePath, motioncam::MountId& mountId, QString& errorMessage) {
     QFileInfo fileInfo(filePath);
     auto dstPath = mountDestinationPath(fileInfo);
+
+#ifdef __APPLE__
+    cleanupStaleMacFuseMounts();
+#endif
 
 #ifdef _WIN32
     if (mCacheRootFolder.isEmpty()) {
@@ -902,26 +1079,51 @@ void MainWindow::addMountedFileUi(const QString& filePath, motioncam::MountId mo
     fileWidget->setCursor(Qt::PointingHandCursor);
     fileWidget->setAttribute(Qt::WA_StyledBackground, true);
     fileWidget->installEventFilter(this);
-    fileWidget->setStyleSheet(
+#ifdef __APPLE__
+    const int titlePt = 13;
+    const int infoPt = 10;
+    const int sourcePt = 10;
+    const int indexPt = 10;
+    const int resetPt = 11;
+    const int badgePt = 10;
+    const int globalBadgePt = 10;
+#else
+    const int titlePt = 11;
+    const int infoPt = 8;
+    const int sourcePt = 8;
+    const int indexPt = 8;
+    const int resetPt = 9;
+    const int badgePt = 8;
+    const int globalBadgePt = 8;
+#endif
+
+    fileWidget->setStyleSheet(QString(
         "QWidget#fileCard { background-color: transparent; }"
         "QWidget#fileCard:hover { background-color: #1b2736; border: 1px solid #2d4460; border-radius: 6px; }"
         "QWidget#fileCard[selected=\"true\"] { background-color: #223246; border: 1px solid #3a5878; border-radius: 6px; }"
         "QLabel { background-color: transparent; }"
-        "QLabel[labelRole=\"title\"] { font-weight: bold; font-size: 11pt; color: #e6e6e6; }"
-        "QLabel[labelRole=\"info\"] { font-size: 8pt; color: #888888; }"
-        "QLabel[labelRole=\"source\"] { font-size: 8pt; color: #666666; }"
-        "QLabel#indexLabel { font-size: 8pt; color: #7f93ad; }"
+        "QLabel[labelRole=\"title\"] { font-weight: bold; font-size: %1pt; color: #e6e6e6; }"
+        "QLabel[labelRole=\"info\"] { font-size: %2pt; color: #888888; }"
+        "QLabel[labelRole=\"source\"] { font-size: %3pt; color: #666666; }"
+        "QLabel#indexLabel { font-size: %4pt; color: #7f93ad; }"
         "QLabel#selectIndicator { border: 1px solid #3a5878; border-radius: 3px; background: transparent; }"
         "QLabel#selectIndicator[checked=\"true\"] { background-color: #f1c65a; border-color: #f1c65a; }"
-        "QPushButton#localReset { color: #e6e6e6; border: 1px solid #e6e6e6; border-radius: 4px; padding: 0px; min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px; font-size: 9pt; font-weight: 700; background: transparent; }"
+        "QPushButton#localReset { color: #e6e6e6; border: 1px solid #e6e6e6; border-radius: 4px; padding: 0px; min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px; font-size: %5pt; font-weight: 700; background: transparent; }"
         "QPushButton#localReset:hover { background-color: rgba(230, 230, 230, 0.16); }"
         "QPushButton#localReset:pressed { background-color: rgba(230, 230, 230, 0.24); }"
-        "QLabel#localBadge { font-size: 8pt; font-weight: 700; color: #f1c65a; border: 1px solid #f1c65a; border-radius: 4px; padding: 2px 6px; }"
-        "QLabel#globalBadge { font-size: 8pt; font-weight: 600; color: #a4b1c2; border: 1px solid #46566b; border-radius: 4px; padding: 2px 6px; }"
+        "QLabel#localBadge { font-size: %6pt; font-weight: 700; color: #f1c65a; border: 1px solid #f1c65a; border-radius: 4px; padding: 2px 6px; }"
+        "QLabel#globalBadge { font-size: %7pt; font-weight: 600; color: #a4b1c2; border: 1px solid #46566b; border-radius: 4px; padding: 2px 6px; }"
         "QWidget#fileCard[selected=\"true\"] QLabel[labelRole=\"title\"] { color: #f1c65a; }"
         "QWidget#fileCard[selected=\"true\"] QLabel[labelRole=\"info\"] { color: #c5d6ea; }"
         "QWidget#fileCard[selected=\"true\"] QLabel[labelRole=\"source\"] { color: #9bb4cc; }"
-        "QWidget#fileCard[selected=\"true\"] QLabel#selectIndicator { }");
+        "QWidget#fileCard[selected=\"true\"] QLabel#selectIndicator { }")
+        .arg(titlePt)
+        .arg(infoPt)
+        .arg(sourcePt)
+        .arg(indexPt)
+        .arg(resetPt)
+        .arg(badgePt)
+        .arg(globalBadgePt));
 
     // Main horizontal layout (thumbnail on left, info on right)
     auto* mainLayout = new QHBoxLayout(fileWidget);
@@ -1170,6 +1372,39 @@ void MainWindow::addMountedFileUi(const QString& filePath, motioncam::MountId mo
     // Generate and load actual frame thumbnail
     QString thumbPath = QDir::temp().filePath(QString("mcraw_thumb_%1.jpg").arg(mountId));
 
+#ifdef __APPLE__
+    thumbnailLabel->setText("Generating...");
+    thumbnailLabel->setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333; color: #888888;");
+
+    QPointer<QLabel> thumbLabelPtr = thumbnailLabel;
+    const int mountIdCopy = mountId;
+    const QString thumbPathCopy = thumbPath;
+    mThumbnailPool.start(new ThumbnailTask([this, thumbLabelPtr, mountIdCopy, thumbPathCopy]() {
+        const bool ok = mFuseFilesystem->generateThumbnail(
+            mountIdCopy,
+            thumbPathCopy.toStdString(),
+            320,
+            240);
+        QMetaObject::invokeMethod(this, [thumbLabelPtr, thumbPathCopy, ok]() {
+            if (!thumbLabelPtr) {
+                return;
+            }
+            if (ok) {
+                QPixmap thumbnail(thumbPathCopy);
+                if (!thumbnail.isNull()) {
+                    thumbLabelPtr->setPixmap(thumbnail);
+                    thumbLabelPtr->setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333;");
+                } else {
+                    thumbLabelPtr->setText("Failed to load");
+                    thumbLabelPtr->setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333; color: #888888;");
+                }
+            } else {
+                thumbLabelPtr->setText("No preview");
+                thumbLabelPtr->setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333; color: #888888;");
+            }
+        }, Qt::QueuedConnection);
+    }));
+#else
     if (mFuseFilesystem->generateThumbnail(mountId, thumbPath.toStdString(), 320, 240)) {
         QPixmap thumbnail(thumbPath);
         if (!thumbnail.isNull()) {
@@ -1183,6 +1418,7 @@ void MainWindow::addMountedFileUi(const QString& filePath, motioncam::MountId mo
         thumbnailLabel->setText("No preview");
         thumbnailLabel->setStyleSheet("background-color: #1a1a1a; border: 1px solid #333333; color: #888888;");
     }
+#endif
 
     for (auto* child : fileWidget->findChildren<QWidget*>()) {
         if (child->property("selectionIgnore").toBool()) {
@@ -1340,7 +1576,34 @@ void MainWindow::playFile(const QString& path) {
 
     success = QProcess::startDetached(QDir::cleanPath(mPlayerPath), QStringList() << path);
 #elif __APPLE__
-    success = QProcess::startDetached("/usr/bin/open", QStringList() << "-a" << "MotionCam Player" << path);
+    QString resolvedPath = path;
+    if (resolvedPath.startsWith("~/")) {
+        resolvedPath = QDir::home().filePath(resolvedPath.mid(2));
+    }
+    QFileInfo sourceInfo(resolvedPath);
+    if (!sourceInfo.exists()) {
+        QMessageBox::warning(this, "Error",
+            QString("Source file not found: %1").arg(resolvedPath));
+        return;
+    }
+    resolvedPath = sourceInfo.canonicalFilePath().isEmpty()
+        ? sourceInfo.absoluteFilePath()
+        : sourceInfo.canonicalFilePath();
+
+    if (!mPlayerPath.isEmpty() && !QFile::exists(mPlayerPath)) {
+        QMessageBox::warning(this, "Error",
+            QString("Player not found at: %1\n\nPlease set the player app path in Cache & Player settings.").arg(mPlayerPath));
+        return;
+    }
+
+    if (!mPlayerPath.isEmpty()) {
+        // Avoid LaunchServices document-type errors; pass file only via argv.
+        success = QProcess::startDetached(
+            "/usr/bin/open",
+            QStringList() << "-a" << mPlayerPath << "--args" << resolvedPath);
+    } else {
+        success = QProcess::startDetached("/usr/bin/open", QStringList() << resolvedPath);
+    }
 #endif
 
     if (!success)
@@ -1374,11 +1637,13 @@ void MainWindow::playMountedFolder(QWidget* fileWidget) {
         QMessageBox::warning(this, "Error", QString("Failed to launch player with: %1").arg(srcFilePath));
     }
 #elif __APPLE__
-    // For macOS, open the entire folder with the default app
-    bool success = QProcess::startDetached("/usr/bin/open", QStringList() << mountPath);
-    if (!success) {
-        QMessageBox::warning(this, "Error", QString("Failed to open folder: %1").arg(mountPath));
+    // For macOS, launch the player with the source MCRAW file.
+    QString srcFilePath = fileWidget->property("filePath").toString();
+    if (srcFilePath.isEmpty()) {
+        QMessageBox::warning(this, "Error", "Source file path not found");
+        return;
     }
+    playFile(srcFilePath);
 #endif
 }
 

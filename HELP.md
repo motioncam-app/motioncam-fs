@@ -1,10 +1,11 @@
 # MotionCam FS Help
 
 ## Quickstart
-- Put your source `.mcraw` files on an NTFS volume (required on Windows).
+- Windows: Put your source `.mcraw` files on an NTFS volume (required).
+- macOS: No NTFS requirement. Mounts are virtual folders.
 - Open MotionCam FS, click **Open** or drag in `.mcraw` files to mount.
 - Adjust settings as needed (global on the right). Use **Apply to Selected** for overrides or **Apply to All** for everything.
-- Mounted DNG sequences appear in the output folder (defaults to source folder, or set a custom NTFS folder in Preferences).
+- Mounted DNG sequences appear in the mount folder (Windows default: source folder; macOS default: `~/Mounts/MotionCamFuse`).
 - Use **Play** to open the mounted sequence in MotionCamPlayer (set path in Preferences).
 
 ## Workspace Tour
@@ -16,11 +17,12 @@
 - **Status Bar**: Refresh progress, FPS updates, cache cleanup events.
 
 ## Preferences
-- **DNG Output Folder**: Leave empty to write next to source (must be NTFS). Set a dedicated NTFS folder if your source isn’t NTFS.
-- **Delete on Unmount**: Also remove generated DNGs when unmounting/clearing.
-- **Video Player**: Path to MotionCamPlayer.exe for the Play action.
-- **Unique Camera Model**: Overrides camera model metadata.
-- **Cache Management**: Mode (Off/Quota), quota (GB), cleanup interval (sec).
+- **DNG Output Folder / Mount Folder**: Windows - leave empty to write next to source (must be NTFS) or set a dedicated NTFS folder. macOS - leave empty to use the default mount root (`~/Mounts/MotionCamFuse`) or set a custom mount folder.
+- **Delete on Unmount**: Windows - remove materialized DNGs when unmounting/clearing. macOS - remove the empty mount folder under the mount root.
+- **Video Player**: Path to MotionCamPlayer.exe (Windows) or MCRAW_Player.app (macOS) for the Play action.
+- **Unique Camera Model**: Overrides camera model metadata (macOS has a Default option to use clip metadata).
+- **Reset**: macOS clears mount folder, player path, and camera model override. Windows resets mount/player paths.
+- **Cache Management**: Windows only. Mode (Off/Quota), quota (GB), cleanup interval (sec).
 
 ## Render Settings (Right Panel)
 - **Draft Mode Quality**: Downscale for speed (2×/4×/8×). High-quality first frame is always on in proxy mode.
@@ -38,7 +40,8 @@
 - Reset buttons remove local normalize exposure/CFR overrides on selected mounts.
 
 ## Troubleshooting
-- **Mount failed / NTFS required**: Ensure source and/or output folder is NTFS (Windows). Set a custom NTFS output folder in Preferences if needed.
+- **Mount failed / NTFS required (Windows)**: Ensure source and/or output folder is NTFS. Set a custom NTFS output folder in Preferences if needed.
+- **Mount failed (macOS)**: Check macFUSE approval and ensure the mount folder is writable and empty.
 - **Audio missing**: Ensure the source has audio; re-mount if you changed audio settings.
 - **dng_validate errors**: Try disabling Scale Raw; ensure the input files are valid.
 - **Cache full**: Increase quota or clear mounts; “Delete on Unmount” removes generated DNGs.
@@ -46,8 +49,16 @@
 
 ## Performance Tips
 - Use Draft quality + proxy defaults for quick browsing; switch to full quality when exporting.
-- Keep DNG output on a fast NTFS SSD; set a quota that fits your drive.
+- Keep mounts on a fast local SSD (NTFS on Windows, APFS/HFS+ on macOS); set a quota that fits your drive.
 - Only enable Normalize Exposure when you see exposure flicker; it adds processing time.
+
+## Universal macOS Build
+- Use a universal binary for a single app that runs on Intel and Apple Silicon.
+- Build script: `scripts/build_macos_universal.sh` (requires `VCPKG_ROOT`).
+  - Example:
+    - `export VCPKG_ROOT=/path/to/vcpkg`
+    - `./scripts/build_macos_universal.sh`
+  - Output: `build-universal-vcpkg/MotionCamFuse.app`
 
 ## Shortcuts & Actions
 - **Select All**: Ctrl/Cmd+A in the mount list.

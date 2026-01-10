@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QPoint>
 #include <QTimer>
+#include <QThreadPool>
 #include <cstdint>
 #include <utility>
 
@@ -173,6 +174,10 @@ private:
     QString defaultSessionFilePath() const;
     bool isAutoSessionFile(const QString& filePath) const;
     void queueAutoApplyAll();
+#ifdef __APPLE__
+    void cleanupStaleMacFuseMounts();
+    void forceUnmountAllMacFuseMounts();
+#endif
 
 private:
     Ui::MainWindow *ui;
@@ -219,6 +224,9 @@ private:
     int mCacheCleanupIntervalSeconds;
     std::uint64_t mCacheQuotaBytes;
     bool mDeleteOnUnmount;
+#ifdef __APPLE__
+    QThreadPool mThumbnailPool;
+#endif
 };
 
 #endif // MAINWINDOW_H

@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 
 if(APPLE)
+  option(MOTIONCAMFUSE_MACOS_X86_64 "Build x86_64 on macOS (Intel / Rosetta)" OFF)
+  option(MOTIONCAMFUSE_MACOS_UNIVERSAL "Build universal macOS binary (x86_64 + arm64)" OFF)
+
+  if(NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+    if(MOTIONCAMFUSE_MACOS_UNIVERSAL)
+      set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures for macOS" FORCE)
+    elseif(MOTIONCAMFUSE_MACOS_X86_64)
+      set(CMAKE_OSX_ARCHITECTURES "x86_64" CACHE STRING "Build architectures for macOS" FORCE)
+    endif()
+  endif()
+
   set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum OS X deployment version")
 endif()
 
@@ -72,10 +83,27 @@ if(WIN32)
 elseif(APPLE)
   list(APPEND PROJECT_SOURCES
       ${MACOS_BUNDLE_ICON_FILE}
+      src/CrashDebug.cpp
       src/macos/FuseFileSystemImpl_MacOS.cpp
+      include/CrashDebug.h
       include/macos/FuseFileSystemImpl_MacOS.h)
 
   find_library(FUSE_T_FRAMEWORK fuse_t)
+  if(NOT FUSE_T_FRAMEWORK)
+    find_library(FUSE_LIBRARY fuse)
+    if(FUSE_LIBRARY)
+      set(FUSE_T_FRAMEWORK ${FUSE_LIBRARY})
+    else()
+      find_library(FUSE3_LIBRARY fuse3)
+      if(FUSE3_LIBRARY)
+        set(FUSE_T_FRAMEWORK ${FUSE3_LIBRARY})
+      endif()
+    endif()
+  endif()
+
+  if(NOT FUSE_T_FRAMEWORK)
+    message(FATAL_ERROR "macFUSE not found. Install macFUSE or set FUSE_T_FRAMEWORK.")
+  endif()
 
   set(platform-specific ${FUSE_T_FRAMEWORK})
 
@@ -147,8 +175,25 @@ target_include_directories(motioncam-decoder
 find_package(spdlog CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)  # Explicitly find fmt as well
 
+if(APPLE)
+  if(TARGET spdlog::spdlog_header_only)
+    set(MOTIONCAM_SPDLOG_TARGET spdlog::spdlog_header_only)
+  else()
+    set(MOTIONCAM_SPDLOG_TARGET spdlog::spdlog)
+  endif()
+
+  if(TARGET fmt::fmt-header-only)
+    set(MOTIONCAM_FMT_TARGET fmt::fmt-header-only)
+  else()
+    set(MOTIONCAM_FMT_TARGET fmt::fmt)
+  endif()
+else()
+  set(MOTIONCAM_SPDLOG_TARGET spdlog::spdlog)
+  set(MOTIONCAM_FMT_TARGET fmt::fmt)
+endif()
+
 # Link spdlog to decoder to avoid ODR violations
-target_link_libraries(motioncam-decoder PRIVATE spdlog::spdlog fmt::fmt)
+target_link_libraries(motioncam-decoder PRIVATE ${MOTIONCAM_SPDLOG_TARGET} ${MOTIONCAM_FMT_TARGET})
 
 # Add UTF-8 support for MSVC
 if (MSVC)
@@ -171,8 +216,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   Qt${QT_VERSION_MAJOR}::Widgets
   Qt${QT_VERSION_MAJOR}::Network
   ${Boost_FILESYSTEM_LIBRARY}
-  spdlog::spdlog
-  fmt::fmt
+  ${MOTIONCAM_SPDLOG_TARGET}
+  ${MOTIONCAM_FMT_TARGET}
   motioncam-decoder
   ${platform-specific})
 

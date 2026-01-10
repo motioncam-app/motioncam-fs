@@ -2,6 +2,7 @@
     <qresource prefix="/">
         <file>assets/app_icon.ico</file>
         <file>assets/app_icon.png</file>
+        <file>assets/app_icon_mac.png</file>
         <file>assets/play_btn.png</file>
         <file>assets/remove_btn.png</file>
         <file>assets/folder_btn.png</file>
