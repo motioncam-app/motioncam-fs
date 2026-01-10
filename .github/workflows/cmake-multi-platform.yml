@@ -24,7 +24,7 @@ jobs:
             vcpkg_triplet: x64-osx
             artifact_suffix: macos-x86_64
             qt_version: 6.7.2
-            qt_install: aqt
+            qt_install: brew
           - os: macos-14
             build_type: Release
             build_dir: build-arm64
@@ -55,16 +55,6 @@ jobs:
           ${{ runner.os }}-${{ matrix.vcpkg_triplet }}-deps-
 
     # ---------- QT ----------
-    - name: Install Qt (macOS)
-      if: matrix.qt_install == 'aqt'
-      uses: jurplel/install-qt-action@v3
-      with:
-        version: "${{ matrix.qt_version }}"
-        host: mac
-        target: desktop
-        arch: ${{ matrix.qt_arch }}
-        set-env: true
-
     - name: Install Qt (macOS arm64 via Homebrew)
       if: matrix.qt_install == 'brew'
       shell: bash
@@ -83,72 +73,6 @@ jobs:
     # ---------- MACOS DEPENDENCIES ----------
     - name: Install macFUSE (macOS)
       run: brew install --cask macfuse
-
-    - name: Install FUSE-T headers (macOS)
-      shell: bash
-      run: |
-        set -euxo pipefail
-
-        BREW_PREFIX="$(brew --prefix)"
-        FUSE_T_VERSION=1.0.49
-        PKG_URL="https://github.com/macos-fuse-t/fuse-t/releases/download/${FUSE_T_VERSION}/fuse-t-macos-installer-${FUSE_T_VERSION}.pkg"
-        echo "📦 Downloading FUSE-T from $PKG_URL"
-        curl -L -o /tmp/fuse-t.pkg "$PKG_URL"
-
-        # Clean temp dirs
-        sudo rm -rf /tmp/fuse-t-* "${BREW_PREFIX}/include/fuse_t"
-        mkdir -p /tmp/fuse-t-expanded /tmp/fuse-t-payload
-
-        echo "📦 Extracting top-level pkg..."
-        if ! pkgutil --expand /tmp/fuse-t.pkg /tmp/fuse-t-expanded 2>/dev/null || [ ! "$(ls -A /tmp/fuse-t-expanded)" ]; then
-          echo "⚠️ pkgutil expand failed or empty — falling back to xar"
-          xar -xf /tmp/fuse-t.pkg -C /tmp/fuse-t-expanded || true
-        fi
-
-        echo "🔍 Searching recursively for Payload files..."
-        find /tmp/fuse-t-expanded -type f -name Payload | while read -r payload; do
-          echo "📂 Extracting payload: $payload"
-          mkdir -p /tmp/fuse-t-payload/tmp
-          cat "$payload" | gunzip -dc | (cd /tmp/fuse-t-payload && cpio -idm) || true
-        done
-
-        echo "📁 Listing extracted payload contents:"
-        find /tmp/fuse-t-payload | head -n 200 || true
-
-        # Look for Headers folders
-        HEADER_CANDIDATES=$(find /tmp/fuse-t-payload -type d \( -path "*/fuse_t.framework/Versions/A/Headers" -o -path "*/fuse_t.framework/Headers" \))
-        if [ -z "$HEADER_CANDIDATES" ]; then
-          echo "❌ Could not locate fuse_t.framework headers after extraction"
-          echo "Dumping directory tree for debugging:"
-          find /tmp/fuse-t-expanded /tmp/fuse-t-payload | head -n 300
-          exit 1
-        fi
-
-        echo "✅ Found fuse_t headers:"
-        echo "$HEADER_CANDIDATES"
-
-        sudo mkdir -p "${BREW_PREFIX}/include/fuse_t"
-        for h in $HEADER_CANDIDATES; do
-          echo "📦 Copying headers from $h"
-          sudo cp -R "$h"/* "${BREW_PREFIX}/include/fuse_t/" || true
-        done
-
-        echo "✅ Final installed headers:"
-        ls -la "${BREW_PREFIX}/include/fuse_t"
-
-        echo "📦 Installing fuse_t.framework to /Library/Frameworks..."
-        sudo mkdir -p /Library/Frameworks
-        sudo cp -R "/tmp/fuse-t-payload/Library/Frameworks/fuse_t.framework" "/Library/Frameworks/"
-        sudo chmod -R 755 "/Library/Frameworks/fuse_t.framework"
-        echo "✅ Installed framework at /Library/Frameworks/fuse_t.framework"
-
-
-    - name: Debug FUSE-T header location
-      continue-on-error: true
-      shell: bash
-      run: |
-        echo "🔍 Searching for fuse_t.h..."
-        find /opt/homebrew /usr/local /Library /Applications /private/tmp -type f -name fuse_t.h || true
 
     # ---------- CONFIGURE ----------
     - name: Configure CMake (macOS)
@@ -170,49 +94,12 @@ jobs:
           -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} \
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.mac_arch }} \
           -DCMAKE_PREFIX_PATH="${QT_PREFIX};$BREW_PREFIX" \
-          -DCMAKE_CXX_FLAGS="-I$BREW_PREFIX/include -I$BREW_PREFIX/include/fuse_t" \
-          -DCMAKE_LIBRARY_PATH="$BREW_PREFIX/lib;/Library/Frameworks" \
-          -DFUSE_T_FRAMEWORK="/Library/Frameworks/fuse_t.framework"
+          -DCMAKE_CXX_FLAGS="-I$BREW_PREFIX/include" \
+          -DCMAKE_LIBRARY_PATH="$BREW_PREFIX/lib"
 
     # ---------- BUILD ----------
     - name: Build
       run: cmake --build "${{ matrix.build_dir }}" --config ${{ matrix.build_type }} --parallel
-
-    - name: Bundle fuse_t.framework into app (macOS)
-      shell: bash
-      run: |
-        set -eux
-        APP_PATH=$(find "${{ matrix.build_dir }}" -name "*.app" | head -n 1)
-        if [ -z "$APP_PATH" ]; then
-          echo "❌ No .app found!"
-          exit 1
-        fi
-
-        echo "📦 Bundling fuse_t.framework into $APP_PATH"
-        mkdir -p "$APP_PATH/Contents/Frameworks"
-
-        # Locate the framework (from extracted FUSE-T)
-        FRAMEWORK_SRC="/tmp/fuse-t-payload/Library/Frameworks/fuse_t.framework"
-        if [ ! -d "$FRAMEWORK_SRC" ]; then
-          echo "❌ fuse_t.framework not found at $FRAMEWORK_SRC"
-          exit 1
-        fi
-
-        # Copy into the app
-        cp -R "$FRAMEWORK_SRC" "$APP_PATH/Contents/Frameworks/"
-
-        # Fix rpath so the app looks inside its own bundle
-        install_name_tool -change \
-          "/Library/Frameworks/fuse_t.framework/Versions/A/fuse_t" \
-          "@rpath/fuse_t.framework/Versions/A/fuse_t" \
-          "$APP_PATH/Contents/MacOS/MotionCamFuse"
-
-        # Ensure the app searches its own Frameworks dir
-        install_name_tool -add_rpath "@executable_path/../Frameworks" \
-          "$APP_PATH/Contents/MacOS/MotionCamFuse"
-
-        echo "✅ fuse_t.framework successfully bundled."
-        ls -R "$APP_PATH/Contents/Frameworks"
 
     # ---------- PACKAGE ----------
     - name: Package binaries (macOS)
