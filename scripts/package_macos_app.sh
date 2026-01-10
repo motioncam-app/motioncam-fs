@@ -58,6 +58,16 @@ copy_framework() {
   return 1
 }
 
+copy_file_force() {
+  local src="$1"
+  local dest="$2"
+  if [[ -e "$dest" ]]; then
+    chmod u+w "$dest" 2>/dev/null || true
+    rm -f "$dest"
+  fi
+  cp -L "$src" "$dest"
+}
+
 copy_dylib() {
   local rel="$1"
   local name
@@ -78,7 +88,7 @@ copy_dylib() {
   )
   for candidate in "${candidates[@]}"; do
     if [[ -f "$candidate" ]]; then
-      cp -L "$candidate" "$target"
+      copy_file_force "$candidate" "$target"
       install_name_tool -id "@rpath/$name" "$target"
       return 0
     fi
@@ -144,7 +154,7 @@ for candidate in "$(brew --prefix)/lib/libfuse.2.dylib" "/usr/local/lib/libfuse.
 done
 if [[ -n "$FUSE_LIB" ]]; then
   mkdir -p "$APP_PATH/Contents/Frameworks"
-  cp "$FUSE_LIB" "$APP_PATH/Contents/Frameworks/"
+  copy_file_force "$FUSE_LIB" "$APP_PATH/Contents/Frameworks/libfuse.2.dylib"
   install_name_tool -id "@rpath/libfuse.2.dylib" "$APP_PATH/Contents/Frameworks/libfuse.2.dylib"
 fi
 
@@ -157,7 +167,7 @@ for candidate in "$(brew --prefix)/lib/libbrotlicommon.1.dylib" "/usr/local/opt/
 done
 if [[ -n "$BROTLI_COMMON" ]]; then
   mkdir -p "$APP_PATH/Contents/Frameworks"
-  cp "$BROTLI_COMMON" "$APP_PATH/Contents/Frameworks/"
+  copy_file_force "$BROTLI_COMMON" "$APP_PATH/Contents/Frameworks/libbrotlicommon.1.dylib"
   install_name_tool -id "@rpath/libbrotlicommon.1.dylib" "$APP_PATH/Contents/Frameworks/libbrotlicommon.1.dylib"
 fi
 
