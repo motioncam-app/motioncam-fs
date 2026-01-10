@@ -75,10 +75,26 @@ jobs:
       run: brew install --cask macfuse
 
     # ---------- CONFIGURE ----------
+    - name: Clean build directory (macOS)
+      shell: bash
+      run: |
+        rm -rf "${{ matrix.build_dir }}"
+
     - name: Configure CMake (macOS)
       shell: bash
       run: |
         BREW_PREFIX="$(brew --prefix)"
+        FUSE_LIB=""
+        for candidate in "$BREW_PREFIX/lib/libfuse.2.dylib" "/usr/local/lib/libfuse.2.dylib" "/opt/homebrew/lib/libfuse.2.dylib"; do
+          if [ -f "$candidate" ]; then
+            FUSE_LIB="$candidate"
+            break
+          fi
+        done
+        if [ -z "$FUSE_LIB" ]; then
+          echo "macFUSE libfuse.2.dylib not found"
+          exit 1
+        fi
         QT_PREFIX="${Qt6_ROOT_DIR:-${Qt6_DIR:-}}"
         if [ -z "$QT_PREFIX" ] || [ ! -d "$QT_PREFIX" ]; then
           if [ -d "${GITHUB_WORKSPACE}/Qt/${{ matrix.qt_version }}/macos" ]; then
@@ -95,7 +111,8 @@ jobs:
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.mac_arch }} \
           -DCMAKE_PREFIX_PATH="${QT_PREFIX};$BREW_PREFIX" \
           -DCMAKE_CXX_FLAGS="-I$BREW_PREFIX/include" \
-          -DCMAKE_LIBRARY_PATH="$BREW_PREFIX/lib"
+          -DCMAKE_LIBRARY_PATH="$BREW_PREFIX/lib" \
+          -DFUSE_T_FRAMEWORK="$FUSE_LIB"
 
     # ---------- BUILD ----------
     - name: Build
