@@ -128,10 +128,10 @@ copy_missing_rpath() {
   done <<< "$missing"
 }
 
-copy_framework "QtDBus"
-copy_framework "QtSvg"
-copy_framework "QtVirtualKeyboard"
-copy_framework "QtVirtualKeyboardQml"
+copy_framework "QtDBus" || true
+copy_framework "QtSvg" || true
+copy_framework "QtVirtualKeyboard" || true
+copy_framework "QtVirtualKeyboardQml" || true
 copy_missing_rpath
 
 BIN="$APP_PATH/Contents/MacOS/MotionCamFuse"
