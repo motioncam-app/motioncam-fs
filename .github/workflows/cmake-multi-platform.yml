@@ -20,6 +20,7 @@ jobs:
             build_dir: build
             vcpkg_triplet: x64-windows
             artifact_suffix: windows
+            qt_version: 6.7.2
           - os: macos-13
             build_type: Release
             build_dir: build-x86
@@ -27,6 +28,7 @@ jobs:
             qt_arch: clang_64
             vcpkg_triplet: x64-osx
             artifact_suffix: macos-x86_64
+            qt_version: 6.7.2
           - os: macos-14
             build_type: Release
             build_dir: build-arm64
@@ -34,6 +36,7 @@ jobs:
             qt_arch: clang_arm64
             vcpkg_triplet: arm64-osx
             artifact_suffix: macos-arm64
+            qt_version: 6.8.0
 
     steps:
     # ---------- CHECKOUT ----------
@@ -59,7 +62,7 @@ jobs:
       if: matrix.os == 'windows-latest'
       uses: jurplel/install-qt-action@v3
       with:
-        version: "6.7.2"
+        version: "${{ matrix.qt_version }}"
         host: windows
         target: desktop
         arch: msvc2019_64
@@ -69,7 +72,7 @@ jobs:
       if: startsWith(matrix.os, 'macos-')
       uses: jurplel/install-qt-action@v3
       with:
-        version: "6.7.2"
+        version: "${{ matrix.qt_version }}"
         host: mac
         target: desktop
         arch: ${{ matrix.qt_arch }}
@@ -165,7 +168,7 @@ jobs:
           -DCMAKE_VERBOSE_MAKEFILE=ON `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ matrix.vcpkg_triplet }} `
-          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/Qt/6.7.2/msvc2019_64" `
+          -DCMAKE_PREFIX_PATH="${{ github.workspace }}/Qt/${{ matrix.qt_version }}/msvc2019_64" `
           -Dprojected-fs="C:/Program Files (x86)/Windows Kits/10/Lib/10.0.26100.0/um/x64/ProjectedFSLib.lib"
 
     - name: Configure CMake (macOS)
@@ -173,7 +176,7 @@ jobs:
       shell: bash
       run: |
         BREW_PREFIX="$(brew --prefix)"
-        QT_PREFIX="${Qt6_ROOT_DIR:-${Qt6_DIR:-${GITHUB_WORKSPACE}/Qt/6.7.2/macos}}"
+        QT_PREFIX="${Qt6_ROOT_DIR:-${Qt6_DIR:-${GITHUB_WORKSPACE}/Qt/${{ matrix.qt_version }}/macos}}"
         cmake -S . -B "${{ matrix.build_dir }}" \
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
           -DCMAKE_VERBOSE_MAKEFILE=ON \
@@ -242,7 +245,7 @@ jobs:
           exe=$(ls *.exe 2>/dev/null | head -n 1)
           if [ -n "$exe" ]; then
             echo "Running windeployqt on $exe"
-            "${{ github.workspace }}/Qt/6.7.2/msvc2019_64/bin/windeployqt.exe" "$exe" || echo "windeployqt failed"
+            "${{ github.workspace }}/Qt/${{ matrix.qt_version }}/msvc2019_64/bin/windeployqt.exe" "$exe" || echo "windeployqt failed"
             7z a ../../artifacts/motioncam-${ref_safe}-${{ matrix.artifact_suffix }}.zip ./*
           fi
         elif [[ "${{ runner.os }}" == "macOS" ]]; then
