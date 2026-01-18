@@ -4,14 +4,30 @@ Desktop tool for mounting MotionCam recordings, exporting DNGs, and reviewing cl
 
 ## Build
 
-Windows (Visual Studio + Qt + vcpkg):
+### Windows 
+
+#### Prerequisites
+
+Visual Studio + Qt + vcpkg
+
+#### Build script
+
 ```
 git submodule update --init --recursive
 .\build.bat
 ```
 Executable lands in `build\Release\MotionCamFuse.exe`.
 
-macOS (Qt + vcpkg, CMake):
+### macOS 
+
+#### Prerequisites 
+
+Qt, vcpkg, macfuse, spdlog, boost and CMake
+
+Example installation, using [homebrew](https://brew.sh/): `brew install cmake qt macfuse spdlog boost`
+
+#### Build script 
+
 ```
 git submodule update --init --recursive
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
