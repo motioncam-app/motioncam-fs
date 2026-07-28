@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=MotionCam Fuse
+Comment=Mount MotionCam MCRAW files as DNG sequences
+Exec=MotionCamFuse
+Icon=motioncam-fuse
+Categories=AudioVideo;Video;
+Terminal=false

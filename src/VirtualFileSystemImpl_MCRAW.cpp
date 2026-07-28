@@ -248,12 +248,17 @@ IconSize=16
     }
 
     void syncAudio(Timestamp videoTimestamp, std::vector<AudioChunk>& audioChunks, int sampleRate, int numChannels) {
+        if(audioChunks.empty())
+            return;
+            
         // Calculate drift between the video and audio
-        auto audioVideoDriftMs = (audioChunks[0].first - videoTimestamp) * 1e-6f;
+        auto audioVideoDriftMs = (audioChunks[0].timestamp - videoTimestamp) * 1e-6f;
         if(std::abs(audioVideoDriftMs) > 1000) {
             spdlog::warn("Audio drift too large, not syncing audio");
             return;
         }
+
+        AudioSampleFormat format = audioChunks[0].format;
 
         if(audioVideoDriftMs > 0) {
             // Calculate how many audio frames to remove
@@ -266,18 +271,23 @@ IconSize=16
 
             while(it != audioChunks.end() && samplesRemoved < samplesToRemove) {
                 int remainingSamplesToRemove = samplesToRemove - samplesRemoved;
+                size_t chunkSize = it->sampleCount();
 
-                if(it->second.size() <= remainingSamplesToRemove) {
+                if(chunkSize <= remainingSamplesToRemove) {
                     // Remove entire chunk
-                    samplesRemoved += it->second.size();
+                    samplesRemoved += chunkSize;
                     it = audioChunks.erase(it);
                 }
                 else {
                     // Trim partial chunk from the beginning
-                    it->second.erase(it->second.begin(), it->second.begin() + remainingSamplesToRemove);
+                    if(format == AudioSampleFormat::Float32) {
+                        it->float32Data.erase(it->float32Data.begin(), it->float32Data.begin() + remainingSamplesToRemove);
+                    } else {
+                        it->int16Data.erase(it->int16Data.begin(), it->int16Data.begin() + remainingSamplesToRemove);
+                    }
 
                     // Update timestamp for the trimmed chunk
-                    it->first += static_cast<Timestamp>(remainingSamplesToRemove * 1000 / sampleRate);
+                    it->timestamp += static_cast<Timestamp>(remainingSamplesToRemove * 1000 / sampleRate);
                     break;
                 }
             }
@@ -290,15 +300,22 @@ IconSize=16
             int silenceSamples = silenceFrames * numChannels;
 
             // Create silence chunk at the beginning
-            std::vector<int16_t> silenceData(silenceSamples, 0);
-            AudioChunk silenceChunk = std::make_pair(videoTimestamp, silenceData);
+            AudioChunk silenceChunk;
+            silenceChunk.timestamp = videoTimestamp;
+            silenceChunk.format = format;
+            
+            if(format == AudioSampleFormat::Float32) {
+                silenceChunk.float32Data.resize(silenceSamples, 0.0f);
+            } else {
+                silenceChunk.int16Data.resize(silenceSamples, 0);
+            }
 
             // Insert silence at the beginning
-            audioChunks.insert(audioChunks.begin(), silenceChunk);
+            audioChunks.insert(audioChunks.begin(), std::move(silenceChunk));
 
             // Update timestamps of existing chunks
             for(auto it = audioChunks.begin() + 1; it != audioChunks.end(); ++it) {
-                it->first += silenceDuration;
+                it->timestamp += silenceDuration;
             }
         }
     }
@@ -468,8 +485,9 @@ VirtualFileSystemImpl_MCRAW::VirtualFileSystemImpl_MCRAW(
         mMatrixFilePath(""),
         mPrefetchWindow(6) {
 
-#ifdef __APPLE__
-    // macOS: match legacy behavior (always cache, no read-ahead prefetch).
+#if defined(__APPLE__) || defined(__linux__)
+    // FUSE-backed platforms use the legacy behavior: always cache generated
+    // frames and avoid speculative read-ahead from concurrent kernel reads.
     mCache.setStreamingBypass(false);
     mPrefetchWindow = 0;
 #else
@@ -555,7 +573,7 @@ void VirtualFileSystemImpl_MCRAW::init(FileRenderOptions options) {
         std::lock_guard<std::mutex> lock(mPrefetchMutex);
         mPrefetchFutures.clear();
         mPrefetchOrder.clear();
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
         mPrefetchOrderIndex.clear();
 #endif
     }
@@ -729,7 +747,9 @@ void VirtualFileSystemImpl_MCRAW::init(FileRenderOptions options) {
 
     if(!audioChunks.empty()) {
         auto fpsFraction = utils::toFraction(mFps);
-        AudioWriter audioWriter(mAudioFile, decoder.numAudioChannels(), decoder.audioSampleRateHz(), fpsFraction.first, fpsFraction.second);
+        AudioSampleFormat audioFormat = audioChunks[0].format;
+        int bitDepth = (audioFormat == AudioSampleFormat::Float32) ? 32 : 16;
+        AudioWriter audioWriter(mAudioFile, decoder.numAudioChannels(), decoder.audioSampleRateHz(), fpsFraction.first, fpsFraction.second, bitDepth);
 
         // Sync the audio to the video
         syncAudio(
@@ -738,8 +758,14 @@ void VirtualFileSystemImpl_MCRAW::init(FileRenderOptions options) {
             decoder.audioSampleRateHz(),
             decoder.numAudioChannels());
 
-        for(auto& x : audioChunks)
-            audioWriter.write(x.second, x.second.size() / decoder.numAudioChannels());
+        for(auto& x : audioChunks) {
+            int numFrames = x.sampleCount() / decoder.numAudioChannels();
+            if(audioFormat == AudioSampleFormat::Float32) {
+                audioWriter.write(x.float32Data, numFrames);
+            } else {
+                audioWriter.write(x.int16Data, numFrames);
+            }
+        }
     }
 
     if(!mAudioFile.empty()) {
@@ -887,7 +913,7 @@ std::shared_future<VirtualFileSystemImpl_MCRAW::FrameData> VirtualFileSystemImpl
         auto [it, inserted] = mPrefetchFutures.emplace(timestamp, sharedFuture);
         if (inserted) {
             mPrefetchOrder.push_back(timestamp);
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__linux__)
             mPrefetchOrderIndex[timestamp] = std::prev(mPrefetchOrder.end());
 #endif
             trimPrefetchLocked();
@@ -902,7 +928,7 @@ void VirtualFileSystemImpl_MCRAW::trimPrefetchLocked() {
     while (mPrefetchOrder.size() > mPrefetchWindow + 2) {
         auto oldest = mPrefetchOrder.front();
         mPrefetchOrder.pop_front();
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__linux__)
         mPrefetchOrderIndex.erase(oldest);
 #endif
         mPrefetchFutures.erase(oldest);
@@ -938,7 +964,7 @@ void VirtualFileSystemImpl_MCRAW::scheduleReadahead(size_t currentIndex) {
             std::lock_guard<std::mutex> lock(mPrefetchMutex);
             if (mPrefetchFutures.emplace(timestamp, fut).second) {
                 mPrefetchOrder.push_back(timestamp);
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__linux__)
                 mPrefetchOrderIndex[timestamp] = std::prev(mPrefetchOrder.end());
 #endif
                 trimPrefetchLocked();
@@ -950,7 +976,7 @@ void VirtualFileSystemImpl_MCRAW::scheduleReadahead(size_t currentIndex) {
 void VirtualFileSystemImpl_MCRAW::consumePrefetch(Timestamp timestamp) {
     std::lock_guard<std::mutex> lock(mPrefetchMutex);
     mPrefetchFutures.erase(timestamp);
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     auto it = std::find(mPrefetchOrder.begin(), mPrefetchOrder.end(), timestamp);
     if (it != mPrefetchOrder.end()) {
         mPrefetchOrder.erase(it);
@@ -1080,8 +1106,9 @@ size_t VirtualFileSystemImpl_MCRAW::generateFrame(
             // Add to cache
             if (cache.isStreamingBypassActive()) {
                 spdlog::debug("[CACHE] SKIP STORE (streaming): {}", entry.name);
-#ifdef __APPLE__
-                // Release any in-progress marker to avoid repeated timeouts on macOS.
+#if defined(__APPLE__) || defined(__linux__)
+                // Release any in-progress marker to avoid repeated timeouts on
+                // FUSE-backed platforms.
                 cache.markLoadFailed(entry);
 #endif
             } else {

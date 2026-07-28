@@ -10,6 +10,73 @@ on:
   workflow_dispatch:
 
 jobs:
+  linux-appimage:
+    name: Linux AppImage (Clang)
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install native build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          clang ninja-build pkg-config \
+          libboost-filesystem-dev libboost-locale-dev libboost-regex-dev \
+          libspdlog-dev libfmt-dev libfuse3-dev libxcb-cursor0
+
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v3
+      with:
+        version: "6.7.2"
+        host: linux
+        target: desktop
+
+    - name: Configure with LLVM
+      shell: bash
+      run: |
+        cmake -S . -B build-linux -G Ninja \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=clang \
+          -DCMAKE_CXX_COMPILER=clang++
+
+    - name: Build
+      run: cmake --build build-linux --parallel
+
+    - name: Create AppImage
+      shell: bash
+      run: |
+        set -euxo pipefail
+        DESTDIR="$PWD/AppDir" cmake --install build-linux --prefix /usr --strip
+        install -Dm644 packaging/linux/com.motioncam.fuse.desktop \
+          AppDir/usr/share/applications/com.motioncam.fuse.desktop
+        install -Dm644 assets/app_icon_linux.png \
+          AppDir/usr/share/icons/hicolor/256x256/apps/motioncam-fuse.png
+        curl -L --retry 3 -o linuxdeploy.AppImage \
+          https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+        curl -L --retry 3 -o linuxdeploy-plugin-qt.AppImage \
+          https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+        chmod +x linuxdeploy.AppImage linuxdeploy-plugin-qt.AppImage
+        export LINUXDEPLOY_PLUGIN_QT_PATH="$PWD/linuxdeploy-plugin-qt.AppImage"
+        export VERSION="${GITHUB_REF_NAME#v}"
+        ./linuxdeploy.AppImage --appimage-extract-and-run \
+          --appdir AppDir \
+          --desktop-file packaging/linux/com.motioncam.fuse.desktop \
+          --icon-file assets/app_icon_linux.png \
+          --plugin qt \
+          --output appimage
+        mkdir -p artifacts
+        mv MotionCam_Fuse-*.AppImage artifacts/motioncam-${GITHUB_REF_NAME}-linux-x86_64.AppImage
+
+    - name: Upload AppImage
+      uses: actions/upload-artifact@v4
+      with:
+        name: motioncam-Linux-AppImage
+        path: artifacts/*.AppImage
+
   build-macos:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -93,6 +160,7 @@ jobs:
     - name: Configure CMake (macOS)
       shell: bash
       run: |
+        export VCPKG_BINARY_SOURCES=clear
         BREW_PREFIX="$(brew --prefix)"
         FUSE_LIB=""
         for candidate in "$BREW_PREFIX/lib/libfuse.2.dylib" "/usr/local/lib/libfuse.2.dylib" "/opt/homebrew/lib/libfuse.2.dylib"; do
@@ -237,7 +305,7 @@ jobs:
   # ---------- RELEASE ----------
   release:
     name: Create GitHub Release
-    needs: [build-macos, build-windows]
+    needs: [linux-appimage, build-macos, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:

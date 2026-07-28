@@ -30,3 +30,13 @@ Universal macOS (x86_64 + arm64) can be built by adding `-DMOTIONCAMFUSE_MACOS_U
 ## Docs
 
 See `HELP.md` for usage, preferences, and feature details.
+
+## Linux
+
+Linux requires FUSE3 (the user must be permitted to mount FUSE filesystems), Qt 6, Boost filesystem/locale/regex, fmt, spdlog, and Clang. On Debian/Ubuntu:
+
+```bash
+sudo apt install clang ninja-build pkg-config libfuse3-dev libboost-filesystem-dev libboost-locale-dev libboost-regex-dev libspdlog-dev libfmt-dev
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build --parallel
+```

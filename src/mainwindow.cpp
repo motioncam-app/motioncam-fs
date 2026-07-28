@@ -53,6 +53,10 @@
 #elif __APPLE__
 #include "macos/FuseFileSystemImpl_MacOS.h"
 #include <sys/mount.h>
+#elif __linux__
+#include "linux/FuseFileSystemImpl_Linux.h"
+#include <cerrno>
+#include <sys/stat.h>
 #endif
 
 namespace {
@@ -103,6 +107,30 @@ namespace {
         return QString::number(bps, 'f', 0) + " B/s";
     }
 
+#ifdef __linux__
+    bool cleanupStaleLinuxFuseMount(const QString& mountPath, QString& errorMessage) {
+        const QByteArray nativePath = QFile::encodeName(QDir::cleanPath(mountPath));
+        struct stat pathStat {};
+        if (::lstat(nativePath.constData(), &pathStat) == 0 || errno != ENOTCONN) {
+            return true;
+        }
+
+        QProcess fusermount;
+        fusermount.start("fusermount3", {"-u", QDir::cleanPath(mountPath)});
+        if (!fusermount.waitForStarted() || !fusermount.waitForFinished(10000) ||
+            fusermount.exitStatus() != QProcess::NormalExit ||
+            fusermount.exitCode() != 0) {
+            const QString details = QString::fromLocal8Bit(fusermount.readAllStandardError()).trimmed();
+            errorMessage = QString("A stale FUSE mount exists at %1 and could not be detached%2.")
+                               .arg(QDir::cleanPath(mountPath),
+                                    details.isEmpty() ? QString() : QString(": %1").arg(details));
+            return false;
+        }
+
+        return true;
+    }
+#endif
+
     void applyRenderOptionsToUi(Ui::MainWindow& ui, motioncam::FileRenderOptions options) {
         QSignalBlocker blockDraft(ui.draftModeCheckBox);
         QSignalBlocker blockVignette(ui.vignetteCorrectionCheckBox);
@@ -138,7 +166,7 @@ namespace {
     }
 
     motioncam::FileRenderOptions getRenderOptions(Ui::MainWindow& ui) {
-        motioncam::FileRenderOptions options = motioncam::RENDER_OPT_NONE;      
+        motioncam::FileRenderOptions options = motioncam::RENDER_OPT_NONE;
 
         if(ui.draftModeCheckBox->checkState() == Qt::CheckState::Checked)
             options |= motioncam::RENDER_OPT_DRAFT;
@@ -247,7 +275,7 @@ namespace {
         }
     }
 #endif
-} 
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -320,6 +348,8 @@ MainWindow::MainWindow(QWidget *parent)
     mFuseFilesystem = std::make_unique<motioncam::FuseFileSystemImpl_MacOs>();
     mThumbnailPool.setMaxThreadCount(2);
     QTimer::singleShot(0, this, &MainWindow::cleanupStaleMacFuseMounts);
+#elif __linux__
+    mFuseFilesystem = std::make_unique<motioncam::FuseFileSystemImpl_Linux>();
 #endif
 
     // Enable drag and drop on the scroll area
@@ -580,7 +610,7 @@ void MainWindow::restoreSettings() {
         ui->draftQuality->setCurrentIndex(1);
     else if(mDraftQuality == 8)
         ui->draftQuality->setCurrentIndex(2);
-    
+
     ui->cfrTarget->setCurrentText(QString::fromStdString(mCFRTarget));          // Set CFR target ComboBox to match restored value
     ui->exposureCompensationCombobox->setCurrentText(QString::fromStdString(mExposureCompensation));
     ui->quadBayerComboBox->setCurrentText(QString::fromStdString(mQuadBayerOption));
@@ -927,15 +957,17 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 }
 
 QString MainWindow::mountDestinationPath(const QFileInfo& fileInfo) const {
-#ifdef __APPLE__
     QString mountRoot = mCacheRootFolder;
+#ifdef __APPLE__
     if (mountRoot.isEmpty()) {
         mountRoot = QDir(QDir::homePath()).filePath("Mounts/MotionCamFuse");
     }
-    return QDir(mountRoot).filePath(fileInfo.baseName());
 #else
-    return (mCacheRootFolder.isEmpty() ? fileInfo.path() : mCacheRootFolder) + "/" + fileInfo.baseName();
+    if (mountRoot.isEmpty()) {
+        mountRoot = fileInfo.path();
+    }
 #endif
+    return QDir::cleanPath(QDir(mountRoot).filePath(fileInfo.baseName()));
 }
 
 void MainWindow::deleteMountOutputIfRequested(const QString& mountPath) {
@@ -1004,6 +1036,10 @@ bool MainWindow::mountFileBackend(const QString& filePath, motioncam::MountId& m
 
 #ifdef __APPLE__
     cleanupStaleMacFuseMounts();
+#elif __linux__
+    if (!cleanupStaleLinuxFuseMount(dstPath, errorMessage)) {
+        return false;
+    }
 #endif
 
 #ifdef _WIN32
@@ -1323,7 +1359,7 @@ void MainWindow::addMountedFileUi(const QString& filePath, motioncam::MountId mo
     // Create horizontal layout for buttons
     auto* buttonLayout = new QHBoxLayout();
     buttonLayout->setSpacing(8);
-    
+
     // Define consistent button size
     const int buttonWidth = 92;
     const int buttonHeight = 28;
@@ -1511,7 +1547,7 @@ bool MainWindow::mountFileWithProgress(const QString& filePath, QProgressDialog&
         }
         if (elapsedMs > 0 && readBytes > 0) {
             const double mb = static_cast<double>(readBytes) / (1024.0 * 1024.0);
-            const double seconds = static_cast<double>(elapsedMs) / 1000.0;     
+            const double seconds = static_cast<double>(elapsedMs) / 1000.0;
             const double mbps = mb / seconds;
             const double alpha = 0.2;
             if (smoothedMbps <= 0.0) {
@@ -1523,7 +1559,7 @@ bool MainWindow::mountFileWithProgress(const QString& filePath, QProgressDialog&
         }
 
         progress.setValue(progressValue);
-        progress.setLabelText(QString("Loading %1 of %2:\n%3\nRead speed: %4")  
+        progress.setLabelText(QString("Loading %1 of %2:\n%3\nRead speed: %4")
             .arg(index + 1)
             .arg(total)
             .arg(loadingInfo.fileName())
@@ -1660,6 +1696,8 @@ void MainWindow::openMountedDirectory(QWidget* fileWidget) {
     success = QProcess::startDetached("explorer", QStringList() << QDir::toNativeSeparators(mountPath));
 #elif __APPLE__
     success = QProcess::startDetached("/usr/bin/open", QStringList() << mountPath);
+#elif __linux__
+    success = QProcess::startDetached("xdg-open", QStringList() << mountPath);
 #endif
 
     if (!success)
@@ -2430,16 +2468,16 @@ void MainWindow::updateFpsLabels() {
         settings.cameraModel = mCameraModel;
         mFuseFilesystem->updateOptions(mountedFile.mountId, settings);
     }
-    
+
     // Find all fps labels in the scroll area
     auto fpsLabels = scrollContent->findChildren<QLabel*>();
-    
+
     for (auto* label : fpsLabels) {
         // Check if this is an fps label by looking for the isFpsLabel property
         if (label->property("infoLabel").toBool()) {
             bool ok = false;
             auto mountId = label->property("mountId").toInt(&ok);
-            
+
             if (ok && mountId >= 0) {
                 // Get the updated fps value
                 auto fileInfoOpt = mFuseFilesystem->getFileInfo(mountId);
@@ -2467,7 +2505,7 @@ void MainWindow::updateFpsLabels() {
     }
 }
 
-void MainWindow::onRenderSettingsChanged(const Qt::CheckState &checkState) {    
+void MainWindow::onRenderSettingsChanged(const Qt::CheckState &checkState) {
     if (!isLocalModeActive()) {
         mGlobalRenderOptions = getRenderOptions(*ui);
     }

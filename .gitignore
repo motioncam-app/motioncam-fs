@@ -1,4 +1,7 @@
 build/
+build-*/
+AppDir/
+artifacts/
 .vs/
 .vscode/
 cache/

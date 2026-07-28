@@ -78,7 +78,7 @@ namespace motioncam {
         return std::make_shared<bw64::iXmlChunk>(metadata);
     }
 
-    AudioWriter::AudioWriter(std::vector<uint8_t>& output, int numChannels, int sampleRate, int fpsNum, int fpsDen) : mFd(-1) {
+    AudioWriter::AudioWriter(std::vector<uint8_t>& output, int numChannels, int sampleRate, int fpsNum, int fpsDen, int bitDepth) : mFd(-1) {
         if(numChannels <= 0 || sampleRate <= 0)
             throw std::runtime_error("Invalid format");
 
@@ -86,10 +86,14 @@ namespace motioncam {
         additionalChunks.push_back(CreateMetadata(fpsNum, fpsDen));
 
         mWriter = std::unique_ptr<bw64::Bw64Writer>(new bw64::Bw64Writer(
-                output, numChannels, sampleRate, 16, additionalChunks));
+                output, numChannels, sampleRate, bitDepth, additionalChunks));
     }
 
     void AudioWriter::write(const std::vector<int16_t>& data, int numFrames) {
+        mWriter->write(data.data(), numFrames);
+    }
+    
+    void AudioWriter::write(const std::vector<float>& data, int numFrames) {
         mWriter->write(data.data(), numFrames);
     }
 }
